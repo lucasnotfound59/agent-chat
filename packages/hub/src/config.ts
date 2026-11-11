@@ -23,7 +23,13 @@ export class ConfigStore {
     this.file = join(dataDir, 'config.json');
     if (existsSync(this.file)) {
       const raw = JSON.parse(readFileSync(this.file, 'utf8'));
-      this.config = { token: raw.token, triage: raw.triage ?? null, dsh: raw.dsh ?? null };
+      const valid = typeof raw.token === 'string' && raw.token !== '';
+      this.config = {
+        token: valid ? raw.token : randomBytes(24).toString('hex'),
+        triage: raw.triage ?? null,
+        dsh: raw.dsh ?? null,
+      };
+      if (!valid) this.save();
     } else {
       this.config = { token: randomBytes(24).toString('hex'), triage: null, dsh: null };
       this.save();

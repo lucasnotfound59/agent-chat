@@ -1,8 +1,8 @@
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
-import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
 import type { Availability } from '@agent-chat/adapters';
 import type { ConfigStore, TriageConfig } from './config';
@@ -28,6 +28,23 @@ export interface ServerDeps {
   config: ConfigStore;
   bus: Bus;
   availability: Map<string, Availability>;
+}
+
+const UPLOAD_FILE = /^([^/\\]+)\/[0-9a-f-]{36}-[^/\\]+$/;
+const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+function hostAllowed(host: string | undefined): boolean {
+  if (!host) return false;
+  const m = /^(\[[^\]]+\]|[^:]+)(?::\d+)?$/.exec(host.trim().toLowerCase());
+  return m !== null && ALLOWED_HOSTS.has(m[1]);
+}
+
+/** Constant-time token comparison; a missing or empty configured token never matches. */
+function tokenMatches(expected: unknown, given: unknown): boolean {
+  if (typeof expected !== 'string' || expected === '' || typeof given !== 'string') return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(given);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 const NUMERIC_SETTINGS = ['debounceMs', 'maxAgentRounds', 'dailyInvocationCap', 'timeoutMs'] as const;
@@ -56,14 +73,30 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     };
   };
 
+  const validAttachment = (convId: string, file: string): boolean => {
+    const m = UPLOAD_FILE.exec(file);
+    if (!m || m[1] !== convId || file.includes('..')) return false;
+    const dir = resolve(attachmentsRoot, convId);
+    const full = resolve(attachmentsRoot, file);
+    if (!full.startsWith(dir + sep)) return false;
+    try {
+      return statSync(full).isFile();
+    } catch {
+      return false;
+    }
+  };
+
   app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
   app.register(websocket);
 
+  // Deny by default: only the matched `/ws` route is exempt (it authenticates by its first message).
+  // Deciding on the matched route, not the raw URL, also covers encoded paths and unmatched routes.
   app.addHook('onRequest', async (req, reply) => {
-    if (!req.url.startsWith('/api/')) return;
-    if (req.headers.authorization !== `Bearer ${config.get().token}`) {
-      return reply.code(401).send({ error: 'unauthorized' });
-    }
+    if (!hostAllowed(req.headers.host)) return reply.code(403).send({ error: 'forbidden host' });
+    if (req.routeOptions.url === '/ws') return;
+    const header = req.headers.authorization;
+    const given = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : undefined;
+    if (!tokenMatches(config.get().token, given)) return reply.code(401).send({ error: 'unauthorized' });
   });
 
   app.register(async (ws) => {
@@ -77,7 +110,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         } catch {
           // handled below
         }
-        if (msg?.type !== 'auth' || msg.token !== config.get().token) {
+        if (msg?.type !== 'auth' || !tokenMatches(config.get().token, msg.token)) {
           socket.close(4001, 'unauthorized');
           return;
         }
@@ -137,7 +170,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!conv) return reply.code(404).send({ error: 'unknown conversation' });
       const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
       const attachments = (Array.isArray(req.body?.attachments) ? req.body.attachments : []).filter(
-        (a) => typeof a?.name === 'string' && typeof a?.file === 'string' && a.file.startsWith(`${conv.id}/`),
+        (a) => typeof a?.name === 'string' && typeof a?.file === 'string' && validAttachment(conv.id, a.file),
       );
       if (!body && attachments.length === 0) return reply.code(400).send({ error: 'empty message' });
       const sender = me();
@@ -213,8 +246,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const b = req.body ?? {};
       if (b.triage === null) patch.triage = null;
       else if (b.triage && typeof b.triage.baseUrl === 'string' && typeof b.triage.model === 'string') {
-        // An empty key keeps the stored one, so the UI can edit other fields without re-entering it.
-        const apiKey = b.triage.apiKey || config.get().triage?.apiKey || '';
+        // An empty key keeps the stored one only while the baseUrl is unchanged, so the key is never sent elsewhere.
+        const stored = config.get().triage;
+        const given = typeof b.triage.apiKey === 'string' ? b.triage.apiKey : '';
+        const apiKey = given || (stored && stored.baseUrl === b.triage.baseUrl ? stored.apiKey : '');
         patch.triage = { baseUrl: b.triage.baseUrl, model: b.triage.model, apiKey };
       }
       if (b.dsh === null) patch.dsh = null;

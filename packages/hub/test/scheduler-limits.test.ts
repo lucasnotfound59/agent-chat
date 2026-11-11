@@ -221,4 +221,20 @@ describe('attachments', () => {
     expect(path).toBe(join(t.dataDir, 'workspaces', 'fake-a', 'attachments', t.dm.id, 'note.txt'));
     expect(existsSync(path)).toBe(true);
   });
+
+  it('drops attachments whose file escapes the attachments root', async () => {
+    const t = setup();
+    writeFileSync(join(t.dataDir, 'config.json'), '{"token":"secret"}');
+    const m = t.store.addMessage({
+      conversationId: t.dm.id,
+      senderId: t.human.id,
+      body: 'x',
+      attachments: [{ name: 'x', file: `${t.dm.id}/../../config.json` }],
+    });
+    t.scheduler.onMessage(m);
+    await t.settle();
+    expect(t.fa.calls[0].newMessages[0].attachments).toEqual([]);
+    expect(existsSync(join(t.dataDir, 'workspaces', 'config.json'))).toBe(false);
+    expect(existsSync(join(t.dataDir, 'workspaces', 'fake-a', 'config.json'))).toBe(false);
+  });
 });

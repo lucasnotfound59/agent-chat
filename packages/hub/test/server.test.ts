@@ -82,6 +82,45 @@ describe('auth', () => {
   });
 });
 
+describe('auth bypass hardening', () => {
+  it('denies encoded-path and unmatched routes without a token', async () => {
+    const s = await state();
+    for (const [method, url] of [
+      ['GET', '/%61pi/state'],
+      ['POST', '/%61pi/stop'],
+      ['GET', '/%61pi/attachments/x'],
+      ['GET', '/nope'],
+    ] as const) {
+      expect((await app.inject({ method, url })).statusCode, `${method} ${url}`).toBe(401);
+    }
+    expect(s.stopped).toBe(false);
+    expect((await state()).stopped).toBe(false);
+  });
+
+  it('rejects a foreign Host header even with a valid token', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/state', headers: { ...auth, host: 'evil.example' } });
+    expect(res.statusCode).toBe(403);
+    const ok = await app.inject({ method: 'GET', url: '/api/state', headers: { ...auth, host: '127.0.0.1:4317' } });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it('closes a websocket whose first message is not a valid auth and sends it no events', async () => {
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const port = (app.server.address() as AddressInfo).port;
+    const received: any[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    ws.on('message', (d) => received.push(JSON.parse(d.toString())));
+    await new Promise((r) => ws.on('open', r));
+    ws.send(JSON.stringify({ type: 'hello' }));
+    await new Promise((r) => ws.on('close', r));
+    const s = await state();
+    const dm = s.conversations.find((c: any) => c.title === 'A');
+    await app.inject({ method: 'POST', url: `/api/conversations/${dm.id}/messages`, headers: auth, payload: { body: 'hi' } });
+    await wait(50);
+    expect(received).toEqual([]);
+  });
+});
+
 describe('state', () => {
   it('returns me, members with availability, conversations and the stop flag', async () => {
     const s = await state();
@@ -190,6 +229,16 @@ describe('settings, stop and config', () => {
     expect(config.get().triage!.apiKey).toBe('secret');
   });
 
+  it('keeps the stored key only while baseUrl is unchanged', async () => {
+    const put = (triage: any) => app.inject({ method: 'PUT', url: '/api/config', headers: auth, payload: { triage } });
+    await put({ baseUrl: 'http://x/v1', apiKey: 'secret', model: 'm' });
+    expect((await put({ baseUrl: 'http://x/v1', apiKey: '', model: 'm2' })).json().triage.hasKey).toBe(true);
+    expect(config.get().triage!.apiKey).toBe('secret');
+    expect((await put({ baseUrl: 'http://x/v1', apiKey: 5, model: 'm2' })).json().triage.hasKey).toBe(true);
+    expect((await put({ baseUrl: 'http://other/v1', apiKey: '', model: 'm2' })).json().triage.hasKey).toBe(false);
+    expect(config.get().triage!.apiKey).toBe('');
+  });
+
   it('updates a member bio', async () => {
     const s = await state();
     const a = s.members.find((m: any) => m.name === 'A');
@@ -199,6 +248,33 @@ describe('settings, stop and config', () => {
 });
 
 describe('attachments', () => {
+  it('drops attachments that escape the conversation folder', async () => {
+    const s = await state();
+    const id = s.conversations[0].id;
+    const up = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${id}/attachments?name=ok.txt`,
+      headers: { ...auth, 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('x'),
+    });
+    const good = up.json();
+    const evil = { name: 'x', file: `${id}/../../config.json` };
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${id}/messages`,
+      headers: auth,
+      payload: { body: 'see', attachments: [evil, good] },
+    });
+    expect(res.json().attachments).toEqual([good]);
+    const only = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${id}/messages`,
+      headers: auth,
+      payload: { body: '', attachments: [evil] },
+    });
+    expect(only.statusCode).toBe(400);
+  });
+
   it('uploads, serves, and blocks path traversal', async () => {
     const s = await state();
     const id = s.conversations[0].id;

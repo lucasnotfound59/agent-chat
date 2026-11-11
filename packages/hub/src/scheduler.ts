@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { AdapterError } from '@agent-chat/adapters';
 import type { AgentAdapter, InvokeRequest, InvokeResult } from '@agent-chat/adapters';
 import { parseMentions } from './mentions';
@@ -321,9 +321,12 @@ export class Scheduler {
 
   /** Copies an attachment into the agent's workdir so every harness can read it. */
   private materialize(file: string, workdir: string): string | null {
-    const src = join(this.deps.dataDir, 'attachments', file);
+    const srcRoot = resolve(this.deps.dataDir, 'attachments');
+    const destRoot = resolve(workdir, 'attachments');
+    const src = resolve(srcRoot, file);
+    const dest = resolve(destRoot, file);
+    if (!src.startsWith(srcRoot + sep) || !dest.startsWith(destRoot + sep)) return null;
     if (!existsSync(src)) return null;
-    const dest = join(workdir, 'attachments', file);
     if (!existsSync(dest)) {
       mkdirSync(dirname(dest), { recursive: true });
       copyFileSync(src, dest);
