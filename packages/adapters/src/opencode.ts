@@ -1,9 +1,49 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { checkCommand, invokeCli, jsonLines } from './cli';
 import { buildPrompt } from './prompt';
 import type { AgentAdapter, Availability, InvokeRequest, InvokeResult } from './types';
 
+export const OPENCODE_AGENT_NAME = 'agentchat';
+
+/** Config for a chat-only agent. The built-in `plan` agent still allows shell, so we define our own. */
+export function opencodeConfigContent(): string {
+  const config = {
+    $schema: 'https://opencode.ai/config.json',
+    agent: {
+      [OPENCODE_AGENT_NAME]: {
+        mode: 'primary',
+        description: 'Chat-only agent: may read and search, may not run commands or change files.',
+        permission: {
+          '*': 'deny',
+          read: 'allow',
+          grep: 'allow',
+          glob: 'allow',
+          webfetch: 'allow',
+          websearch: 'allow',
+        },
+      },
+    },
+  };
+  return `${JSON.stringify(config, null, 2)}\n`;
+}
+
+/** Writes <workdir>/opencode.json (only there), restoring it if it differs. */
+export function ensureOpenCodeConfig(workdir: string): void {
+  mkdirSync(workdir, { recursive: true });
+  const file = join(workdir, 'opencode.json');
+  const want = opencodeConfigContent();
+  let current: string | null = null;
+  try {
+    current = readFileSync(file, 'utf8');
+  } catch {
+    // missing
+  }
+  if (current !== want) writeFileSync(file, want);
+}
+
 export function opencodeArgs(req: InvokeRequest, prompt: string): string[] {
-  const args = ['run', '--format', 'json', '--agent', 'plan'];
+  const args = ['run', '--format', 'json', '--agent', OPENCODE_AGENT_NAME];
   if (req.harnessSessionId) args.push('--session', req.harnessSessionId);
   args.push(prompt);
   return args;
@@ -34,6 +74,7 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   invoke(req: InvokeRequest): Promise<InvokeResult> {
+    ensureOpenCodeConfig(req.workdir);
     return invokeCli({ cmd: this.cmd, args: opencodeArgs(req, buildPrompt(req)) }, req, parseOpenCode);
   }
 }

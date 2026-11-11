@@ -26,6 +26,8 @@ npm run hub
 | OpenCode | 已安装并配置好 `opencode` |
 | DSH | 已安装 `dsh`；如果 headless 配置的默认模型不可用，在设置里指定 provider 和 model |
 
+中枢会在自己的 OpenCode 工作目录内创建 `opencode.json`（定义只读 agent），不会改动你自己的 OpenCode 配置。
+
 启动时会打印每个 agent 是否可用及原因。
 
 ## 设置

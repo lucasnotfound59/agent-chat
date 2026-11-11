@@ -21,7 +21,7 @@
 - "不开口"标记固定为 `[[PASS]]`。
 - 已在本机实测的命令行（2026-11-11）：
   - Codex 0.167.0：新会话 `codex exec --json --skip-git-repo-check -s read-only -C <dir> -`；续接 `codex exec resume --json --skip-git-repo-check -c sandbox_mode="read-only" <id> -`（`resume` 不接受 `-s`）。
-  - OpenCode 2.2.6：`opencode run --format json --agent plan [--session <id>] <消息>`。
+  - OpenCode 2.2.6：`opencode run --format json --agent agentchat [--session <id>] <消息>`。内置 `plan` agent 仍允许执行 shell，所以适配器在工作目录写入一个 `opencode.json`，其中定义只读 agent `agentchat`（只放行 read/grep/glob/webfetch/websearch，其余一律拒绝）。
   - DSH 0.2.2-rc.1：`dsh --profile headless [--patch <文件>] --json --permission-mode read-only --approval-policy never [--session-id <id>] -`。本机 headless 配置的默认模型指向未注册的 provider，必须用 `--patch` 覆盖为 `my-provider` / `my-provider/deepseek-flash` 才能运行。
   - Claude Code 2.1.322：`claude -p --output-format json --tools Read,WebSearch,WebFetch --allowedTools Read,WebSearch,WebFetch --strict-mcp-config [--resume <id>]`，提示词走标准输入。本机命令行当前未登录（`claude auth status` 返回 `loggedIn: false`），成功输出格式未实测，只确认了 `{type:"result", is_error, result, session_id}` 这几个字段。
 

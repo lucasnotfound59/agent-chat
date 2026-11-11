@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { opencodeArgs, parseOpenCode, OpenCodeAdapter } from '../src/index';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  opencodeArgs, parseOpenCode, OpenCodeAdapter,
+  OPENCODE_AGENT_NAME, opencodeConfigContent, ensureOpenCodeConfig,
+} from '../src/index';
 import type { InvokeRequest } from '../src/index';
 
 const req: InvokeRequest = {
@@ -27,12 +33,12 @@ const OK = [
 ].join('\n');
 
 describe('opencodeArgs', () => {
-  it('uses the read-only plan agent and passes the prompt as the message', () => {
-    expect(opencodeArgs(req, 'PROMPT')).toEqual(['run', '--format', 'json', '--agent', 'plan', 'PROMPT']);
+  it('uses the read-only agentchat agent and passes the prompt as the message', () => {
+    expect(opencodeArgs(req, 'PROMPT')).toEqual(['run', '--format', 'json', '--agent', 'agentchat', 'PROMPT']);
   });
   it('adds the session when resuming', () => {
     expect(opencodeArgs({ ...req, harnessSessionId: sid }, 'PROMPT')).toEqual([
-      'run', '--format', 'json', '--agent', 'plan', '--session', sid, 'PROMPT',
+      'run', '--format', 'json', '--agent', 'agentchat', '--session', sid, 'PROMPT',
     ]);
   });
 });
@@ -52,5 +58,40 @@ describe('parseOpenCode', () => {
 describe('OpenCodeAdapter', () => {
   it('has stable identity', () => {
     expect(new OpenCodeAdapter().name).toBe('opencode');
+  });
+});
+
+describe('ensureOpenCodeConfig', () => {
+  const tmp = () => mkdtempSync(join(tmpdir(), 'oc-cfg-'));
+
+  it('writes a config whose agent denies everything except read-only tools', () => {
+    const dir = tmp();
+    ensureOpenCodeConfig(dir);
+    const text = readFileSync(join(dir, 'opencode.json'), 'utf8');
+    expect(text).toBe(opencodeConfigContent());
+    expect(text.endsWith('\n')).toBe(true);
+    const cfg = JSON.parse(text);
+    expect(OPENCODE_AGENT_NAME).toBe('agentchat');
+    const perm = cfg.agent.agentchat.permission;
+    expect(perm['*']).toBe('deny');
+    expect(perm.read).toBe('allow');
+    for (const k of ['shell', 'bash', 'edit', 'write']) expect(perm[k]).not.toBe('allow');
+  });
+  it('is idempotent', () => {
+    const dir = tmp();
+    ensureOpenCodeConfig(dir);
+    ensureOpenCodeConfig(dir);
+    expect(readFileSync(join(dir, 'opencode.json'), 'utf8')).toBe(opencodeConfigContent());
+  });
+  it('restores a tampered file', () => {
+    const dir = tmp();
+    writeFileSync(join(dir, 'opencode.json'), '{"agent":{"agentchat":{"permission":{"*":"allow"}}}}');
+    ensureOpenCodeConfig(dir);
+    expect(readFileSync(join(dir, 'opencode.json'), 'utf8')).toBe(opencodeConfigContent());
+  });
+  it('creates a missing directory', () => {
+    const dir = join(tmp(), 'a', 'b');
+    ensureOpenCodeConfig(dir);
+    expect(existsSync(join(dir, 'opencode.json'))).toBe(true);
   });
 });

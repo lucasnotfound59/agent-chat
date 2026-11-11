@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { tmpdir } from 'node:os';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { runProcess, liveProcessCount, killAllProcessGroups, jsonLines, invokeCli, checkCommand, AdapterError } from '../src/index';
 import type { InvokeRequest } from '../src/index';
@@ -16,6 +16,12 @@ const opts = (code: string, extra: Partial<Parameters<typeof runProcess>[0]> = {
 });
 
 describe('runProcess', () => {
+  it('sets PWD to cwd so tools that read $PWD (OpenCode) see the right directory', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pwd-')));
+    const r = await runProcess(opts('console.log(process.env.PWD)', { cwd: dir }));
+    expect(r.stdout.trim()).toBe(dir);
+  });
+
   it('captures stdout, stderr and exit code, and passes stdin', async () => {
     const r = await runProcess(
       opts(`process.stdin.on('data', d => { console.log('got ' + d); console.error('warn'); process.exitCode = 3; })`, {

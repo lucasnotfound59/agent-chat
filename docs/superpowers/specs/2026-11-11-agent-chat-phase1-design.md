@@ -68,7 +68,7 @@ packages/
 |---|---|---|---|
 | Claude Code | `claude -p`，JSON 输出 | 按会话 ID 续接 | 只放行读取和联网搜索类工具 |
 | Codex | `codex exec` | `codex exec resume <id>` | `--sandbox read-only` |
-| OpenCode | `opencode run --format json` | `--session <id>` | 不传 `--auto` |
+| OpenCode | `opencode run --format json` | `--session <id>` | 工作目录内的 `opencode.json` 定义只读 agent `agentchat`（禁用命令执行和写入） |
 | DSH | `dsh --profile headless --json` | `--session-id <id>` | `--approval-policy never` 加只读权限预设 |
 
 各命令的确切参数在实施时以本机安装版本的 `--help` 为准（当前：Claude Code 2.1.322、codex-cli 0.167.0、opencode 2.2.6、DSH 0.2.2-rc.1）。

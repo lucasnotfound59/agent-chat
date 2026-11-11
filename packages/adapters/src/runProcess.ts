@@ -44,7 +44,8 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
     }
     const child = spawn(o.cmd, o.args, {
       cwd: o.cwd,
-      env: o.env ?? process.env,
+      // Some tools (OpenCode) locate their project from $PWD, not the real cwd.
+      env: { ...(o.env ?? process.env), PWD: o.cwd },
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,
     });
