@@ -35,6 +35,52 @@ npm run hub
 - `triage`：群聊里决定谁发言的小模型，任意 OpenAI 兼容接口，`{ baseUrl, apiKey, model }`。不配置时，群里只有被 @ 的 agent 会回复。
 - `dsh`：DSH 使用的模型，`{ provider, model }`。
 
+## 在有界面之前怎么用
+
+每个请求都要带请求头 `Authorization: Bearer <token>`。令牌保存在数据目录的 `config.json` 里，文件只有当前用户可读，不要分享给别人。请求只能发往 `127.0.0.1` 或 `localhost`，其他主机名会被拒绝。
+
+下面的示例用 shell 变量保存令牌，不会把它打印出来（默认数据目录和端口，改过的话请对应修改；需要 `jq`）：
+
+```bash
+DATA="$HOME/Library/Application Support/AgentChat"
+BASE=http://127.0.0.1:4317
+TOKEN=$(jq -r .token "$DATA/config.json")
+```
+
+查看全部状态（成员、会话、可用性）：
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/state | jq
+```
+
+设置 DSH 使用的模型。如果这台机器上 headless 的默认模型不可用，DSH 在设置之前都会失败：
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"dsh":{"provider":"my-provider","model":"my-provider/deepseek-flash"}}' $BASE/api/config
+```
+
+给某个私聊发消息（先从 `/api/state` 的 `conversations` 里取会话 id）：
+
+```bash
+CONV=<会话id>
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"body":"你好"}' $BASE/api/conversations/$CONV/messages
+```
+
+新建群聊（`memberIds` 是要加入的 agent 成员 id，你自己会自动加入）：
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title":"讨论组","memberIds":["<成员id1>","<成员id2>"]}' $BASE/api/conversations
+```
+
+读取消息（最新的在后，`limit` 最多 200，用 `beforeSeq` 翻更早的）：
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/conversations/$CONV/messages?limit=20" | jq
+```
+
 ## 测试
 
 ```bash
