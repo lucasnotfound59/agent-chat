@@ -1,7 +1,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { ClaudeAdapter, CodexAdapter, DshAdapter, OpenCodeAdapter, dshModelPatch } from '@agent-chat/adapters';
+import {
+  ClaudeAdapter,
+  CodexAdapter,
+  DshAdapter,
+  OpenCodeAdapter,
+  dshModelPatch,
+  killAllProcessGroups,
+  liveProcessCount,
+} from '@agent-chat/adapters';
 import type { AgentAdapter, Availability } from '@agent-chat/adapters';
 import { seed } from './bootstrap';
 import { ConfigStore } from './config';
@@ -73,10 +81,20 @@ for (const a of adapterList) {
   console.log(`  ${a.displayName}: ${s.ok ? '可用' : `不可用（${s.reason}）`}`);
 }
 
+let shuttingDown = false;
 const shutdown = async () => {
-  scheduler.stopAll();
-  await app.close();
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    scheduler.stopAll();
+    await app.close();
+  } catch (err) {
+    console.error('[shutdown] error while closing', err);
+  }
+  // Give agent processes a moment to exit after SIGTERM, then kill whatever is left.
+  const deadline = Date.now() + 2500;
+  while (liveProcessCount() > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  killAllProcessGroups('SIGKILL');
   process.exit(0);
 };
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(sig, () => void shutdown());

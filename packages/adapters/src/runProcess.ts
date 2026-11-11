@@ -17,6 +17,25 @@ export interface RunResult {
   stderr: string;
 }
 
+// Pids of live children (each is its own process-group leader), so the hub can reap them on exit.
+const livePids = new Set<number>();
+
+export function liveProcessCount(): number {
+  return livePids.size;
+}
+
+export function killAllProcessGroups(signal: NodeJS.Signals): void {
+  for (const pid of livePids) {
+    try {
+      process.kill(-pid, signal);
+    } catch {
+      // group already gone
+    }
+  }
+}
+
+process.on('exit', () => killAllProcessGroups('SIGKILL'));
+
 export function runProcess(o: RunOptions): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     if (o.signal.aborted) {
@@ -29,6 +48,8 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,
     });
+    const pid = child.pid;
+    if (pid !== undefined) livePids.add(pid);
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -76,6 +97,7 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
     child.on('close', (code) => {
       // The group leader is gone; never signal a possibly recycled pid later.
       clearTimeout(killTimer);
+      if (pid !== undefined) livePids.delete(pid);
       finish(() => resolve({ code, stdout, stderr }));
     });
     child.stdin.on('error', () => {});

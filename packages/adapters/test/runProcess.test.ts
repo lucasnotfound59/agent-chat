@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { tmpdir } from 'node:os';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
-import { runProcess, jsonLines, invokeCli, checkCommand, AdapterError } from '../src/index';
+import { runProcess, liveProcessCount, killAllProcessGroups, jsonLines, invokeCli, checkCommand, AdapterError } from '../src/index';
 import type { InvokeRequest } from '../src/index';
 
 const node = process.execPath;
@@ -50,6 +50,32 @@ describe('runProcess', () => {
     await expect(p).rejects.toMatchObject({ code: 'aborted' });
     await new Promise((r) => setTimeout(r, 2000));
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it('tracks live children and returns to zero after abort and close', async () => {
+    const before = liveProcessCount();
+    const ac = new AbortController();
+    const p = runProcess(opts('setTimeout(() => {}, 10000)', { signal: ac.signal }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(liveProcessCount()).toBe(before + 1);
+    ac.abort();
+    await expect(p).rejects.toMatchObject({ code: 'aborted' });
+    const end = Date.now() + 3000;
+    while (liveProcessCount() > before && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
+    expect(liveProcessCount()).toBe(before);
+  });
+
+  it('killAllProcessGroups kills a running child and its grandchild', async () => {
+    const marker = join(mkdtempSync(join(tmpdir(), 'runproc-')), 'written');
+    const grandchild = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x'), 1500)`;
+    const code = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: 'ignore' }); setTimeout(() => {}, 10000)`;
+    const p = runProcess(opts(code));
+    await new Promise((r) => setTimeout(r, 300));
+    killAllProcessGroups('SIGKILL');
+    await p;
+    await new Promise((r) => setTimeout(r, 2000));
+    expect(existsSync(marker)).toBe(false);
+    expect(liveProcessCount()).toBe(0);
   });
 
   it('rejects with unavailable when the command does not exist', async () => {
