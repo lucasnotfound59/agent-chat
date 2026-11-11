@@ -1,17 +1,18 @@
 import type { AgentAdapter } from '@agent-chat/adapters';
 import type { Store } from './store';
 
-/** Creates the human, one agent member per adapter, and their private chats on first run. */
+/**
+ * Idempotent and incremental: creates the human if missing, and for each adapter without a member
+ * creates the agent member and its private chat. Existing members and conversations are untouched.
+ */
 export function seed(store: Store, adapters: AgentAdapter[]): void {
-  if (store.listMembers().length > 0) return;
-  const me = store.createMember({ kind: 'human', name: '我' });
+  const me = store.listMembers().find((m) => m.kind === 'human') ?? store.createMember({ kind: 'human', name: '我' });
   for (const adapter of adapters) {
-    const agent = store.createMember({
-      kind: 'agent',
-      name: adapter.displayName,
-      bio: adapter.defaultBio,
-      adapter: adapter.name,
-    });
-    store.createConversation({ kind: 'dm', title: adapter.displayName, memberIds: [me.id, agent.id] });
+    if (store.listMembers().some((m) => m.adapter === adapter.name)) continue;
+    const taken = new Set(store.listMembers().map((m) => m.name));
+    let name = adapter.displayName;
+    for (let n = 2; taken.has(name); n++) name = `${adapter.displayName} ${n}`;
+    const agent = store.createMember({ kind: 'agent', name, bio: adapter.defaultBio, adapter: adapter.name });
+    store.createConversation({ kind: 'dm', title: name, memberIds: [me.id, agent.id] });
   }
 }
