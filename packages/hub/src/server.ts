@@ -14,7 +14,13 @@ import type { Attachment, HubEvent, Settings } from './types';
 export class Bus {
   private readonly listeners = new Set<(e: HubEvent) => void>();
   emit(e: HubEvent): void {
-    for (const fn of this.listeners) fn(e);
+    for (const fn of this.listeners) {
+      try {
+        fn(e);
+      } catch (err) {
+        console.error('[bus] listener failed', err);
+      }
+    }
   }
   on(fn: (e: HubEvent) => void): () => void {
     this.listeners.add(fn);
@@ -182,8 +188,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         replyTo: typeof req.body?.replyTo === 'string' ? req.body.replyTo : null,
         attachments,
       });
-      bus.emit({ type: 'message', message });
       scheduler.onMessage(message);
+      bus.emit({ type: 'message', message });
       return message;
     },
   );

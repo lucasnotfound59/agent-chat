@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,7 @@ import { Bus, buildServer } from '../src/server';
 import { Store } from '../src/store';
 
 let app: FastifyInstance;
+let bus: Bus;
 let store: Store;
 let config: ConfigStore;
 let fa: FakeAdapter;
@@ -38,7 +39,7 @@ beforeEach(() => {
   fa = new FakeAdapter('fake-a', 'A');
   fb = new FakeAdapter('fake-b', 'B');
   seed(store, [fa, fb]);
-  const bus = new Bus();
+  bus = new Bus();
   const availability = new Map([
     ['fake-a', { ok: true }],
     ['fake-b', { ok: false, reason: '未登录' }],
@@ -70,6 +71,22 @@ describe('seed', () => {
     expect(store.listMembers().map((m) => m.name)).toEqual(['我', 'A', 'B']);
     expect(store.listMembers()[1]).toMatchObject({ kind: 'agent', adapter: 'fake-a', bio: fa.defaultBio });
     expect(store.listConversations().map((c) => `${c.kind}:${c.title}`)).toEqual(['dm:A', 'dm:B']);
+  });
+});
+
+describe('Bus', () => {
+  it('delivers to remaining listeners when one throws', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const b = new Bus();
+    const got: string[] = [];
+    b.on(() => {
+      throw new Error('boom');
+    });
+    b.on((e) => got.push(e.type));
+    expect(() => b.emit({ type: 'ready' } as any)).not.toThrow();
+    expect(got).toEqual(['ready']);
+    expect(spy).toHaveBeenCalledWith('[bus] listener failed', expect.any(Error));
+    spy.mockRestore();
   });
 });
 
@@ -147,6 +164,25 @@ describe('messages', () => {
     await until(() => store.listMessages(dm.id).length === 2);
     const list = await app.inject({ method: 'GET', url: `/api/conversations/${dm.id}/messages?limit=1`, headers: auth });
     expect(list.json().map((m: any) => m.body)).toEqual(['reply from A']);
+  });
+
+  it('still answers when a bus listener throws', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    bus.on(() => {
+      throw new Error('bad listener');
+    });
+    const s = await state();
+    const dm = s.conversations.find((c: any) => c.title === 'A');
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${dm.id}/messages`,
+      headers: auth,
+      payload: { body: '在吗' },
+    });
+    expect(res.statusCode).toBe(200);
+    await until(() => store.listMessages(dm.id).length === 2);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it('parses mentions from the body', async () => {
