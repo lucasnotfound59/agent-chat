@@ -23,14 +23,33 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
       reject(new AdapterError('aborted', 'aborted before start'));
       return;
     }
-    const child = spawn(o.cmd, o.args, { cwd: o.cwd, env: o.env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(o.cmd, o.args, {
+      cwd: o.cwd,
+      env: o.env ?? process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
+    });
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
 
+    // Signal the whole process group so grandchildren (tool shells, MCP servers) die too.
+    const signalGroup = (sig: NodeJS.Signals) => {
+      if (child.pid === undefined) {
+        child.kill(sig);
+        return;
+      }
+      try {
+        process.kill(-child.pid, sig);
+      } catch {
+        // group already gone
+      }
+    };
     const kill = () => {
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 2000).unref();
+      signalGroup('SIGTERM');
+      killTimer = setTimeout(() => signalGroup('SIGKILL'), 2000);
+      killTimer.unref();
     };
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -54,7 +73,11 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
     child.stdout.on('data', (c: string) => (stdout += c));
     child.stderr.on('data', (c: string) => (stderr += c));
     child.on('error', (e) => finish(() => reject(new AdapterError('unavailable', e.message))));
-    child.on('close', (code) => finish(() => resolve({ code, stdout, stderr })));
+    child.on('close', (code) => {
+      // The group leader is gone; never signal a possibly recycled pid later.
+      clearTimeout(killTimer);
+      finish(() => resolve({ code, stdout, stderr }));
+    });
     child.stdin.on('error', () => {});
     child.stdin.end(o.stdin ?? '');
   });

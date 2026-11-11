@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
 import { runProcess, jsonLines, invokeCli, checkCommand, AdapterError } from '../src/index';
 import type { InvokeRequest } from '../src/index';
 
@@ -36,6 +38,18 @@ describe('runProcess', () => {
     const p = runProcess(opts('setTimeout(() => {}, 10000)', { signal: ac.signal }));
     setTimeout(() => ac.abort(), 50);
     await expect(p).rejects.toMatchObject({ code: 'aborted' });
+  });
+
+  it('kills grandchildren too when aborted', async () => {
+    const marker = join(mkdtempSync(join(tmpdir(), 'runproc-')), 'written');
+    const grandchild = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x'), 1500)`;
+    const code = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: 'ignore' }); setTimeout(() => {}, 10000)`;
+    const ac = new AbortController();
+    const p = runProcess(opts(code, { signal: ac.signal }));
+    setTimeout(() => ac.abort(), 300);
+    await expect(p).rejects.toMatchObject({ code: 'aborted' });
+    await new Promise((r) => setTimeout(r, 2000));
+    expect(existsSync(marker)).toBe(false);
   });
 
   it('rejects with unavailable when the command does not exist', async () => {
