@@ -118,7 +118,9 @@ export class Scheduler {
     const delay = conv.kind === 'dm' ? 0 : conv.settings.debounceMs;
     st.timer = setTimeout(() => {
       st.timer = null;
-      void this.runRound(conversationId);
+      this.runRound(conversationId).catch((err) => {
+        console.error('[scheduler] round failed', err);
+      });
     }, delay);
   }
 
@@ -221,8 +223,8 @@ export class Scheduler {
     const adapter = agent.adapter ? this.deps.adapters.get(agent.adapter) : undefined;
     if (!adapter) return true;
     const invocationId = store.startInvocation(conv.id, agent.id, reason);
-    emit({ type: 'typing', conversationId: conv.id, memberId: agent.id, active: true });
     try {
+      emit({ type: 'typing', conversationId: conv.id, memberId: agent.id, active: true });
       const { result, seenSeq } = await this.callAdapter(adapter, conv, agent, signal);
       store.setAgentSession(conv.id, agent.id, result.harnessSessionId, seenSeq);
       if (result.kind === 'reply') {
@@ -254,7 +256,11 @@ export class Scheduler {
       this.system(conv.id, `${agent.name} 出错：${(e as Error).message}`, { invocationId, retryable: true });
       return true;
     } finally {
-      emit({ type: 'typing', conversationId: conv.id, memberId: agent.id, active: false });
+      try {
+        emit({ type: 'typing', conversationId: conv.id, memberId: agent.id, active: false });
+      } catch (err) {
+        console.error('[scheduler] typing emit failed', err);
+      }
     }
   }
 
@@ -271,7 +277,6 @@ export class Scheduler {
     } catch (e) {
       // A stored harness session may be gone; start over once with recent history.
       if (session && e instanceof AdapterError && e.code === 'crashed') {
-        this.deps.store.clearAgentSession(conv.id, agent.id);
         const fresh = this.buildRequest(conv, agent, null, signal);
         return { result: await adapter.invoke(fresh.req), seenSeq: fresh.seenSeq };
       }

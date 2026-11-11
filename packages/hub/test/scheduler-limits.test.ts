@@ -60,13 +60,22 @@ describe('pause', () => {
   it('abortConversation interrupts a running invocation', async () => {
     const t = setup();
     t.fa.handler = hang;
-    const m = t.say(t.dm.id, 'hi');
+    t.say(t.dm.id, 'hi');
     await vi.advanceTimersByTimeAsync(10);
     expect(t.fa.calls).toHaveLength(1);
     t.scheduler.abortConversation(t.dm.id);
     await t.settle();
     expect(t.bodies(t.dm.id)).toEqual(['hi']);
-    expect(m.seq).toBeGreaterThan(0);
+    expect(t.fa.calls[0].signal.aborted).toBe(true);
+    expect(
+      t.events.some((e) => e.type === 'typing' && !e.active && e.conversationId === t.dm.id),
+    ).toBe(true);
+
+    t.fa.handler = async () => ({ kind: 'reply', body: 'after abort', harnessSessionId: 's' });
+    t.say(t.dm.id, 'again');
+    await t.settle();
+    expect(t.fa.calls).toHaveLength(2);
+    expect(t.bodies(t.dm.id).at(-1)).toBe('after abort');
   });
 });
 
@@ -143,6 +152,50 @@ describe('errors', () => {
     expect(last.newMessages.map((m) => m.body)).toEqual(['第一句', 'reply from A', '第二句']);
     expect(t.store.getAgentSession(t.dm.id, t.a.id)!.harnessSessionId).toBe('new-session');
     expect(t.bodies(t.dm.id).at(-1)).toBe('recovered');
+  });
+
+  it('keeps the stored session when the fresh fallback attempt also fails', async () => {
+    const t = setup();
+    t.say(t.dm.id, '第一句');
+    await t.settle();
+    t.fa.handler = async (req) => {
+      if (req.harnessSessionId) throw new AdapterError('crashed', 'unknown session');
+      throw new AdapterError('timeout', 'slow');
+    };
+    t.say(t.dm.id, '第二句');
+    await t.settle();
+    expect(t.store.getAgentSession(t.dm.id, t.a.id)!.harnessSessionId).toBe('fake-a-session');
+    const notice = t.store.listMessages(t.dm.id).at(-1)!;
+    expect(notice.kind).toBe('system');
+    expect(notice.meta).toMatchObject({ retryable: true });
+  });
+
+  it('survives a throwing emit: invocation is finished and the conversation is not stuck', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let thrown = false;
+    const t = setup({
+      onEmit: (e) => {
+        if (!thrown && e.type === 'typing') {
+          thrown = true;
+          throw new Error('emit down');
+        }
+      },
+    });
+    t.say(t.dm.id, 'hi');
+    await t.settle();
+    const first = t.store.listMessages(t.dm.id);
+    expect(first[0].body).toBe('hi');
+    expect(thrown).toBe(true);
+    // every started invocation has an outcome
+    expect(t.store.countInvocationsSince(t.dm.id, 0)).toBe(1);
+    const sys = first.find((m) => m.kind === 'system');
+    const invId = sys?.meta?.invocationId as string | undefined;
+    if (invId) expect(t.store.getInvocation(invId)!.outcome).not.toBeNull();
+
+    t.say(t.dm.id, 'again');
+    await t.settle();
+    expect(t.bodies(t.dm.id)).toContain('reply from A');
+    spy.mockRestore();
   });
 
   it('retryInvocation refuses unknown ids', async () => {

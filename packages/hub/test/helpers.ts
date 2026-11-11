@@ -23,7 +23,9 @@ export class FakeTriage implements Triage {
   }
 }
 
-export function setup(opts: { triage?: boolean; settings?: Partial<Settings> } = {}) {
+export function setup(
+  opts: { triage?: boolean; settings?: Partial<Settings>; onEmit?: (e: HubEvent) => void } = {},
+) {
   const store = new Store(':memory:');
   const dataDir = mkdtempSync(join(tmpdir(), 'agentchat-test-'));
   const fa = new FakeAdapter('fake-a', 'A');
@@ -48,7 +50,10 @@ export function setup(opts: { triage?: boolean; settings?: Partial<Settings> } =
       [fb.name, fb],
     ]),
     triage: () => (opts.triage ? triage : null),
-    emit: (e) => events.push(e),
+    emit: (e) => {
+      events.push(e);
+      opts.onEmit?.(e);
+    },
     dataDir,
     isAvailable: (name) => !unavailable.has(name),
   });
