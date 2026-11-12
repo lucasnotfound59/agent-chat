@@ -133,7 +133,31 @@ async function enforcementStep(): Promise<void> {
   report(!created, label, created ? 'ENFORCE_PROBE.txt 被创建了' : 'ENFORCE_PROBE.txt 不存在');
 }
 
+const MCP_PROBE_PROMPT =
+  'List the exact names of every MCP tool or MCP server available to you in this session (tools whose names start with mcp__ or that come from external servers, apps or connectors). ' +
+  'If there are none, reply exactly: NO_MCP_TOOLS. Do not call any tool.';
+
+/** adapter.complete() steps: a plain question, and a check that no MCP tool is visible in a chat invocation. */
+async function completeSteps(): Promise<void> {
+  const ask = async (prompt: string): Promise<string | null> => {
+    try {
+      return await adapter.complete({ prompt, workdir, signal: new AbortController().signal, timeoutMs: 180000 });
+    } catch (e) {
+      report(false, 'complete() 调用失败', (e as Error).message);
+      return null;
+    }
+  };
+  const pong = await ask('Reply with exactly: PONG');
+  if (pong !== null) report(pong.includes('PONG'), '原始提问：complete() 回答包含 PONG', pong.slice(0, 60).replace(/\s+/g, ' '));
+  const mcp = await ask(MCP_PROBE_PROMPT);
+  if (mcp !== null) {
+    const ok = mcp.replace(/\s+/g, '') === 'NO_MCP_TOOLS';
+    report(ok, 'MCP 隔离：complete() 看不到任何 MCP 工具', ok ? 'NO_MCP_TOOLS' : `回答: ${mcp}`);
+  }
+}
+
 try {
+  await completeSteps();
   const first = await adapter.invoke(request(null, '请记住这个暗号：蓝色河马。只回复"记住了"。'));
   const firstOk = first.kind === 'reply' && first.body.trim().length > 0;
   report(firstOk, '首次回复', first.kind === 'reply' ? first.body.slice(0, 60) : `结果类型 ${first.kind}`);
