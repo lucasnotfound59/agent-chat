@@ -137,7 +137,11 @@ const MCP_PROBE_PROMPT =
   'List the exact names of every MCP tool or MCP server available to you in this session (tools whose names start with mcp__ or that come from external servers, apps or connectors). ' +
   'If there are none, reply exactly: NO_MCP_TOOLS. Do not call any tool.';
 
-/** adapter.complete() steps: a plain question, and a check that no MCP tool is visible in a chat invocation. */
+const TOOL_LIST_PROMPT =
+  'List the exact names of ALL tools available to you in this session, one per line, nothing else. Do not call any tool.';
+const FORBIDDEN_TOOL_WORDS = ['agent-chat', 'agent_chat', 'list_members', 'mcp__'];
+
+/** adapter.complete() steps: a plain question, and checks that no MCP tool is visible in a chat invocation. */
 async function completeSteps(): Promise<void> {
   const ask = async (prompt: string): Promise<string | null> => {
     try {
@@ -153,6 +157,11 @@ async function completeSteps(): Promise<void> {
   if (mcp !== null) {
     const ok = mcp.replace(/\s+/g, '') === 'NO_MCP_TOOLS';
     report(ok, 'MCP 隔离：complete() 看不到任何 MCP 工具', ok ? 'NO_MCP_TOOLS' : `回答: ${mcp}`);
+  }
+  const tools = await ask(TOOL_LIST_PROMPT);
+  if (tools !== null) {
+    const hit = FORBIDDEN_TOOL_WORDS.filter((w) => tools.includes(w));
+    report(hit.length === 0, '工具清单：complete() 列出的工具里没有 agent-chat / MCP 工具', hit.length === 0 ? tools.trim().replace(/\s+/g, ' ').slice(0, 120) : `命中 ${hit.join(', ')}；回答: ${tools}`);
   }
 }
 

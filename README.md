@@ -36,7 +36,7 @@ npm run hub
 
 设置通过 `PUT /api/config` 写入：
 
-- `triageAgent`：群聊里决定谁发言的 agent（不再需要 API key）。不设置时按 `dsh`、`opencode`、`codex`、`claude` 的顺序取第一个可用的；可以指定为某个 agent 的名字，如 `{"triageAgent":"codex"}`；设为 `null` 或 `"off"` 则关闭，此时群里只有被 @ 的 agent 会回复。代价：每个群聊回合在 agent 发言之前多等几秒到十几秒，因为要先调用一次所选 agent 来判断谁发言。
+- `triageAgent`：群聊里决定谁发言的 agent（不再需要 API key）。不设置时按 `dsh`、`opencode`、`codex`、`claude` 的顺序取第一个可用的；可以指定为某个 agent 的名字，如 `{"triageAgent":"codex"}`；设为字符串 `"off"` 则关闭，此时群里只有被 @ 的 agent 会回复；设为 `null` 不是关闭，而是恢复上面的自动选择。代价：每个群聊回合在 agent 发言之前多等几秒到十几秒，因为要先调用一次所选 agent 来判断谁发言。
 - `dsh`：DSH 使用的模型，`{ provider, model }`。
 
 ## 在有界面之前怎么用
@@ -109,7 +109,18 @@ npm run connect -- --apply     # 真正登记
 npm run disconnect             # 预览撤销；加 -- --apply 才真正撤销
 ```
 
-`--apply` 会修改你各软件的全局配置：Codex 的 `~/.codex/config.toml`（并把工具超时设为 600 秒）、Claude Code 的 `~/.claude.json`（用户级）、OpenCode 的 `~/.config/opencode`、DSH 的 `~/.dsh/profiles/*/cordis.patch.yml`。改文件前会各留一份 `.agent-chat.bak` 备份，登记名固定为 `agent-chat`。
+登记名固定为 `agent-chat`。`--apply` 会修改你各软件的全局配置，各目标的做法和能否撤销如下：
+
+| 目标 | 改哪里、怎么改 | 备份 | `disconnect` |
+|---|---|---|---|
+| Codex | 先 `codex mcp remove agent-chat`（忽略失败），再 `codex mcp add`，再直接编辑 `~/.codex/config.toml`（或 `$CODEX_HOME`）把 `tool_timeout_sec` 设为 600 | `config.toml.agent-chat.bak`（只在不存在时创建，不覆盖） | `codex mcp remove agent-chat` |
+| Claude Code | `claude mcp remove -s user agent-chat`（忽略失败），再 `claude mcp add -s user`，由 `claude` 自己改 `~/.claude.json` | 没有备份 | `claude mcp remove -s user agent-chat` |
+| OpenCode | 直接编辑全局配置（`~/.config/opencode/opencode.json`，只有 `opencode.jsonc` 存在时用它；设了 `XDG_CONFIG_HOME` 则在其下的 `opencode/`），写入 `mcp["agent-chat"] = {type: "local", command: [...], enabled: true, timeout: 600000}`，其余键原样保留，同时清掉旧的 `opencode mcp add` 留下的 `mcp.servers["agent-chat"]` | `opencode.json.agent-chat.bak`（同上，只在不存在时创建） | 只删 `mcp["agent-chat"]`（以及 `mcp.servers["agent-chat"]`），其他条目不动 |
+| DSH | 在每个存在的 profile（`web`、`tui`）的 `cordis.patch.yml` 里加一个 `# >>> agent-chat` 标记块 | `cordis.patch.yml.agent-chat.bak`（同上） | 删除标记块，备份保留 |
+
+OpenCode 不用 `opencode mcp add`：实测 OpenCode v2.2.6 的该命令写出 `mcp.servers.<名字>` 结构，OpenCode 并不读取，登记后 `opencode mcp list` 为空、agent 也看不到工具；`mcp["agent-chat"]` 这种写法经实测可用（`opencode mcp list` 显示 connected，默认 agent 能调用 `list_members`）。写入的 `timeout` 是 OpenCode 对 MCP 请求的超时（毫秒），它的默认值只有 5000，对 `ask` 太短。如果 OpenCode 的配置文件带注释（JSONC）或不是合法 JSON，脚本不会改它，而是报错并打印要手工加的条目。
+
+所有被写入的配置文件都通过同目录临时文件加改名的方式原子写入，符号链接会被跟随（链接本身保留，改的是它指向的文件）。重复运行 `connect` 是安全的；如果先删掉旧登记、重新登记却失败了，错误信息会明确说明旧登记已被删除、现在处于缺失状态，以及如何重试。
 
 `as` 参数（提问者身份）在 `/api/ask` 上由调用方自己声明，任何持有令牌的进程都可以冒用别人的名字；MCP 服务通过启动参数 `--as` 固定自己的身份，但这不是安全边界。
 
@@ -119,13 +130,13 @@ npm run disconnect             # 预览撤销；加 -- --apply 才真正撤销
 
 DSH 的例外：DSH 的隔离依赖 `headless` profile 本身没有配置 MCP 服务，`connect` 不会往 `headless` 里写。如果你自己在 `headless` profile 里配了 MCP 服务，聊天时它们会被加载。
 
-冒烟脚本会让每个 agent 回答一个"列出你能用的 MCP 工具"的问题，要求回答 `NO_MCP_TOOLS`。注意这个检查对 OpenCode 偏弱：实测 OpenCode 的默认 agent 在注册了 `agent-chat` 的情况下，仍可能回答 `NO_MCP_TOOLS`（它不把 `tools["agent-chat"].ask` 当作 MCP 工具），所以更可靠的证据是让它列出自己的全部工具名。
+冒烟脚本对每个 agent 做三个 `complete()` 检查：原始提问（回答包含 `PONG`）、MCP 隔离（回答 `NO_MCP_TOOLS`）、工具清单（列出全部工具名，其中不能出现 `agent-chat`、`agent_chat`、`list_members`、`mcp__`）。
 
 ### 尚未验证的部分
 
-- Claude Code 的命令行在这台机器上没有登录，涉及 Claude Code 的一切（聊天调用、`--strict-mcp-config` 的隔离效果、`claude mcp add` 的登记、冒烟脚本里的两个新步骤）都没有用真实命令行验证过。
+- Claude Code 的命令行在这台机器上没有登录，涉及 Claude Code 的一切（聊天调用、`--strict-mcp-config` 的隔离效果、`claude mcp add` 的登记、冒烟脚本里新增的 `complete()` 检查）都没有用真实命令行验证过。
 - Claude Code 的 MCP 工具超时是否由环境变量 `MCP_TOOL_TIMEOUT` 控制、是否会被遵守，未验证；`connect` 不改它。如果 `ask` 在 Claude Code 里提前超时，需要自己设置这个环境变量。
-- OpenCode：实测 `opencode mcp add`（v2.2.6）写出的是 `mcp.servers.<name>` 结构，而后台服务读取的是 `mcp.<name>`（`type`、`command` 数组、`enabled`）；前者登记后 `opencode mcp list` 显示没有服务，agent 也看不到工具，改成后者后才显示 connected。`connect` 在检查和登记 OpenCode 时依赖这条命令，登记后请自己用 `opencode mcp list` 确认。
+- OpenCode 的"聊天时看不到 `agent-chat` 工具"用真实命令行测过：把 `agent-chat` 登记在（临时目录里的）全局配置、适配器的 `opencode.json` 放在另一个工作目录，`agentchat` agent 的工具只有 `glob grep read skill webfetch websearch`，要求它调用 `list_members` 时没有发生任何工具调用，而默认 agent 能调用（通过它的 `execute` 工具）。OpenCode 的 MCP 工具不一定出现在模型自述的工具清单里，所以自述清单本身不是可靠证据，冒烟脚本里 OpenCode 的"MCP 隔离"一步实际上是空洞的（默认 agent 也会回答 `NO_MCP_TOOLS`）；可靠的证据是上面这种"要求它真的去调用"的实测。
 
 ## 测试
 
@@ -134,4 +145,4 @@ npm test                       # 自动测试，不调用真实 agent
 npm run smoke -- codex         # 手动冒烟，会调用真实 agent 并产生费用
 ```
 
-`smoke` 可选 `claude`、`codex`、`opencode`、`dsh`。每个 agent 都会依次跑：`complete()` 原始提问（回答包含 `PONG`）、MCP 隔离（回答 `NO_MCP_TOOLS`）、会话续接、只读强制。DSH 可用 `DSH_SMOKE_MODEL="provider|model"` 指定模型。
+`smoke` 可选 `claude`、`codex`、`opencode`、`dsh`。每个 agent 都会依次跑：`complete()` 的三个检查（原始提问、MCP 隔离、工具清单）、会话续接、只读强制。DSH 可用 `DSH_SMOKE_MODEL="provider|model"` 指定模型。
