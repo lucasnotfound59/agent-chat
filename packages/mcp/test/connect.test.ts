@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -40,9 +40,13 @@ describe('planConnect / planDisconnect display', () => {
   it('connect displays are exact', () => {
     const steps = plan(planConnect);
     expect(steps.map((s) => [s.target, s.display])).toEqual([
+      ['codex', `copy /fake/home/.codex/config.toml to /fake/home/.codex/config.toml.agent-chat.bak (only if that backup does not exist yet)`],
+      ['codex', 'codex mcp remove agent-chat'],
       ['codex', `codex mcp add agent-chat -- ${cmd('codex')}`],
-      ['codex', `set tool_timeout_sec = 600 in [mcp_servers.agent-chat] of /fake/home/.codex/config.toml`],
+      ['codex', `set tool_timeout_sec = 600 in [mcp_servers.agent-chat] of /fake/home/.codex/config.toml (backup: /fake/home/.codex/config.toml.agent-chat.bak)`],
+      ['claude', 'claude mcp remove -s user agent-chat'],
       ['claude', `claude mcp add -s user agent-chat -- ${cmd('claude')}`],
+      ['opencode', 'opencode mcp list'],
       ['opencode', `opencode mcp add --global agent-chat -- ${cmd('opencode')}`],
       [
         'dsh',
@@ -68,11 +72,13 @@ describe('planConnect / planDisconnect display', () => {
 
   it('quotes arguments that need it', () => {
     const [s] = planConnect({ targets: ['claude'], repoRoot: '/my repo', home: '/h', nodePath: '/n o/node', dshProfiles: [] });
-    expect(s.display).toContain(`'/n o/node' --import file:///my%20repo/node_modules/tsx/dist/loader.mjs '/my repo/packages/mcp/src/main.ts' --as claude`);
+    expect(s.display).toBe('claude mcp remove -s user agent-chat');
+    const add = planConnect({ targets: ['claude'], repoRoot: '/my repo', home: '/h', nodePath: '/n o/node', dshProfiles: [] })[1];
+    expect(add.display).toContain(`'/n o/node' --import file:///my%20repo/node_modules/tsx/dist/loader.mjs '/my repo/packages/mcp/src/main.ts' --as claude`);
   });
 
   it('only plans the requested targets; dsh with no profiles plans nothing', () => {
-    expect(plan(planConnect, '/h', ['claude']).map((s) => s.target)).toEqual(['claude']);
+    expect(plan(planConnect, '/h', ['claude']).map((s) => s.target)).toEqual(['claude', 'claude']);
     expect(planConnect({ targets: ['dsh'], repoRoot, home: '/h', nodePath, dshProfiles: [] })).toEqual([]);
   });
 });
@@ -88,8 +94,11 @@ describe('commands run through the injected executor', () => {
     for (const s of planDisconnect({ targets: ALL, repoRoot, home, nodePath, dshProfiles: [], exec })) await s.run();
     const c = (t: string) => ['/fake/bin/node', '--import', LOADER, MAIN, '--as', t];
     expect(calls).toEqual([
+      ['codex', ['mcp', 'remove', 'agent-chat']],
       ['codex', ['mcp', 'add', 'agent-chat', '--', ...c('codex')]],
+      ['claude', ['mcp', 'remove', '-s', 'user', 'agent-chat']],
       ['claude', ['mcp', 'add', '-s', 'user', 'agent-chat', '--', ...c('claude')]],
+      ['opencode', ['mcp', 'list']],
       ['opencode', ['mcp', 'add', '--global', 'agent-chat', '--', ...c('opencode')]],
       ['codex', ['mcp', 'remove', 'agent-chat']],
       ['claude', ['mcp', 'remove', '-s', 'user', 'agent-chat']],
@@ -304,14 +313,14 @@ describe('runCli with a fake home', () => {
     const code = await runCli(['connect', '--apply', 'codex', 'claude'], {
       ...realHome,
       home,
-      exec: async (f) => {
+      exec: async (f, a) => {
         calls.push(f);
-        if (f === 'codex') throw new Error('boom');
+        if (f === 'codex' && a[1] === 'add') throw new Error('boom');
       },
       ...w,
     });
     expect(code).toBe(1);
-    expect(calls).toEqual(['codex', 'claude']); // the codex timeout step is not attempted after its add failed
+    expect(calls).toEqual(['codex', 'codex', 'claude', 'claude']); // remove+add for each; the failed codex add does not stop claude
     expect(o.out).toMatch(/FAILED.*boom/);
   });
 
@@ -350,10 +359,250 @@ describe('entry point process', () => {
     const code = await new Promise((r) => child.on('close', r));
     expect(err).toBe('');
     expect(code).toBe(0);
-    for (const frag of ['codex mcp add agent-chat --', 'tool_timeout_sec = 600', 'claude mcp add -s user agent-chat --', 'opencode mcp add --global agent-chat --', 'cordis.patch.yml']) {
+    for (const frag of ['codex mcp add agent-chat --', 'tool_timeout_sec = 600', 'claude mcp add -s user agent-chat --', 'agent-chat.bak', 'opencode mcp add --global agent-chat --', 'cordis.patch.yml']) {
       expect(out).toContain(frag);
     }
     expect(existsSync(marker)).toBe(false);
     expect(snapshot(home)).toEqual(before);
   }, 30000);
+});
+
+describe('setCodexToolTimeout: table boundaries and forms', () => {
+  const T = '[mcp_servers.agent-chat]\ncommand = "n"\n';
+  const insert = (before: string, after: string) => {
+    const out = setCodexToolTimeout(before, 'agent-chat', 600);
+    expect(out).toBe(after);
+  };
+
+  it.each([
+    ['projects table with a slash in a quoted key', '[projects."/a b/c"]\ntrust_level = "trusted"\ntool_timeout_sec = 7\n'],
+    ['plugins table with @ in a quoted key', '[plugins."x@y"]\nenabled = true\ntool_timeout_sec = 7\n'],
+    ['array-of-tables', '[[array]]\nname = "a"\ntool_timeout_sec = 7\n'],
+    ['header with trailing comment', '[other] # note\ntool_timeout_sec = 7\n'],
+  ])('stops at a foreign header: %s', (_n, foreign) => {
+    insert(`# top\n${T}${foreign}`, `# top\n${T}tool_timeout_sec = 600\n${foreign}`);
+  });
+
+  it('is not fooled by [ on a continuation line of a multi-line array', () => {
+    const t = '[mcp_servers.agent-chat]\nargs = [\n  "a",\n[1, 2],\n  # [x]\n]\n';
+    insert(`${t}[o]\ntool_timeout_sec = 7\n`, `${t}tool_timeout_sec = 600\n[o]\ntool_timeout_sec = 7\n`);
+  });
+
+  it('is not fooled by a header-looking line inside a multi-line string', () => {
+    const t = '[mcp_servers.agent-chat]\nnote = """\n[not.a.header]\ntext"""\nlit = \'\'\'\n[nor.this]\n\'\'\'\n';
+    insert(`${t}[o]\nx = 1\n`, `${t}tool_timeout_sec = 600\n[o]\nx = 1\n`);
+  });
+
+  it('keeps a comment block that precedes the next header after the new key', () => {
+    insert(`${T}\n# about o\n# more\n[o]\nx = 1\n`, `${T}tool_timeout_sec = 600\n\n# about o\n# more\n[o]\nx = 1\n`);
+  });
+
+  it('replaces a quoted key and keeps the trailing comment', () => {
+    insert(
+      '[mcp_servers.agent-chat]\n  "tool_timeout_sec"   =  30   # keep\ncommand = "n"\n[o]\ntool_timeout_sec = 7\n',
+      '[mcp_servers.agent-chat]\n  "tool_timeout_sec"   =  600   # keep\ncommand = "n"\n[o]\ntool_timeout_sec = 7\n',
+    );
+  });
+
+  it('preserves CRLF line endings', () => {
+    insert('[a]\r\nx = 1\r\n[mcp_servers.agent-chat]\r\ncommand = "n"\r\n\r\n[o]\r\ny = 2\r\n', '[a]\r\nx = 1\r\n[mcp_servers.agent-chat]\r\ncommand = "n"\r\ntool_timeout_sec = 600\r\n\r\n[o]\r\ny = 2\r\n');
+    insert('[mcp_servers.agent-chat]\r\ncommand = "n"\r\ntool_timeout_sec = 1\r\n', '[mcp_servers.agent-chat]\r\ncommand = "n"\r\ntool_timeout_sec = 600\r\n');
+  });
+
+  it('handles a table that ends the file without a final newline', () => {
+    insert('[mcp_servers.agent-chat]\ncommand = "n"', '[mcp_servers.agent-chat]\ncommand = "n"\ntool_timeout_sec = 600\n');
+    insert('[mcp_servers.agent-chat]', '[mcp_servers.agent-chat]\ntool_timeout_sec = 600\n');
+    insert('[a]\nx = 1\n[mcp_servers.agent-chat]\r\ncommand = "n"', '[a]\nx = 1\n[mcp_servers.agent-chat]\r\ncommand = "n"\r\ntool_timeout_sec = 600\r\n');
+  });
+
+  it.each([
+    ['inline table', 'mcp_servers = { agent-chat = { command = "x" } }\n'],
+    ['dotted key at the root', 'mcp_servers.agent-chat.command = "x"\n'],
+    ['dotted key under [mcp_servers]', '[mcp_servers]\nagent-chat.command = "x"\n'],
+    ['inline table under [mcp_servers]', '[mcp_servers]\nagent-chat = { command = "x" }\n'],
+  ])('throws for a form it cannot edit safely: %s', (_n, toml) => {
+    expect(() => setCodexToolTimeout(toml, 'agent-chat', 600)).toThrow(/cannot be edited safely|inline|dotted/);
+  });
+});
+
+describe('codex config backup and atomic write', () => {
+  function codexSetup(content = '[mcp_servers.agent-chat]\ncommand = "n"\n') {
+    const home = mk();
+    const dir = join(home, '.codex');
+    mkdirSync(dir);
+    const file = join(dir, 'config.toml');
+    writeFileSync(file, content);
+    return { home, dir, file };
+  }
+  const run = async (o: { home: string; codexHome?: string }, which: 'connect' | 'disconnect' = 'connect') => {
+    for (const s of (which === 'connect' ? planConnect : planDisconnect)({ targets: ['codex'], repoRoot, nodePath, dshProfiles: [], exec: async () => {}, ...o })) await s.run();
+  };
+
+  it('backs up once, keeps the mode, leaves no temp file', async () => {
+    const { home, dir, file } = codexSetup();
+    chmodSync(file, 0o600);
+    await run({ home });
+    expect(readFileSync(`${file}.agent-chat.bak`, 'utf8')).toBe('[mcp_servers.agent-chat]\ncommand = "n"\n');
+    expect(readFileSync(file, 'utf8')).toBe('[mcp_servers.agent-chat]\ncommand = "n"\ntool_timeout_sec = 600\n');
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readdirSync(dir).sort()).toEqual(['config.toml', 'config.toml.agent-chat.bak']);
+    writeFileSync(file, '[mcp_servers.agent-chat]\ncommand = "changed"\n');
+    await run({ home });
+    expect(readFileSync(`${file}.agent-chat.bak`, 'utf8')).toBe('[mcp_servers.agent-chat]\ncommand = "n"\n');
+  });
+
+  it('honours codexHome', async () => {
+    const { home } = codexSetup('# real\n');
+    const other = mk();
+    writeFileSync(join(other, 'config.toml'), '[mcp_servers.agent-chat]\n');
+    await run({ home, codexHome: other });
+    expect(readFileSync(join(other, 'config.toml'), 'utf8')).toContain('tool_timeout_sec = 600');
+    expect(readFileSync(join(other, 'config.toml.agent-chat.bak'), 'utf8')).toBe('[mcp_servers.agent-chat]\n');
+    expect(readFileSync(join(home, '.codex/config.toml'), 'utf8')).toBe('# real\n');
+  });
+
+  it('runCli reads CODEX_HOME and names the backup in the plan', async () => {
+    const codexHome = mk();
+    const o = { out: '' };
+    const code = await runCli(['connect', 'codex'], {
+      env: { CODEX_HOME: codexHome },
+      home: '/nowhere',
+      repoRoot,
+      nodePath,
+      which: () => true,
+      out: (s) => (o.out += s),
+      err: () => {},
+    });
+    expect(code).toBe(0);
+    expect(o.out).toContain(`${join(codexHome, 'config.toml')}.agent-chat.bak`);
+    expect(o.out).not.toContain('/nowhere/.codex');
+  });
+});
+
+describe('connect is re-runnable (fake executor)', () => {
+  function world() {
+    const home = mk();
+    const codexDir = join(home, '.codex');
+    mkdirSync(codexDir);
+    const file = join(codexDir, 'config.toml');
+    writeFileSync(file, '[projects."/x y"]\ntool_timeout_sec = 7\n');
+    const reg = { codex: false, claude: false, opencode: false };
+    const calls: string[] = [];
+    const exec = async (f: string, a: string[]): Promise<string | void> => {
+      calls.push(`${f} ${a.slice(0, 2).join(' ')}`);
+      if (f === 'opencode' && a[1] === 'list') return reg.opencode ? '  ● agent-chat  connected\n' : 'No MCP servers configured\n';
+      const k = f as 'codex' | 'claude';
+      if (a[1] === 'remove') {
+        if (!reg[k]) throw new Error('not found');
+        reg[k] = false;
+        if (k === 'codex') writeFileSync(file, '[projects."/x y"]\ntool_timeout_sec = 7\n');
+      } else if (a[1] === 'add') {
+        if (reg[k as 'codex']) throw new Error('already exists');
+        reg[k as 'codex'] = true;
+        if (k === 'codex') writeFileSync(file, `${readFileSync(file, 'utf8')}\n[mcp_servers.agent-chat]\ncommand = "n"\n`);
+      }
+    };
+    return { home, file, reg, calls, exec };
+  }
+  const go = async (w: ReturnType<typeof world>, argv = ['connect', '--apply', 'codex', 'claude', 'opencode']) => {
+    const o = { out: '' };
+    const code = await runCli(argv, { env: {}, home: w.home, repoRoot, nodePath, exec: w.exec, which: () => true, out: (s) => (o.out += s), err: () => {} });
+    return { code, out: o.out };
+  };
+
+  it('a second run ends in the same state with exit 0', async () => {
+    const w = world();
+    const first = await go(w);
+    expect(first.code).toBe(0);
+    const state = readFileSync(w.file, 'utf8');
+    expect(state).toBe('[projects."/x y"]\ntool_timeout_sec = 7\n\n[mcp_servers.agent-chat]\ncommand = "n"\ntool_timeout_sec = 600\n');
+    const second = await go(w);
+    expect(second.code).toBe(0);
+    expect(readFileSync(w.file, 'utf8')).toBe(state);
+    expect(w.reg).toEqual({ codex: true, claude: true, opencode: true });
+    expect(second.out).toMatch(/skipped: already registered/);
+    expect(w.calls.filter((c) => c === 'opencode mcp add')).toHaveLength(1);
+  });
+
+  it('runs the timeout step even when add fails, as long as the table exists', async () => {
+    const w = world();
+    writeFileSync(w.file, '[mcp_servers.agent-chat]\ncommand = "n"\n');
+    const exec = async (f: string, a: string[]) => {
+      if (f === 'codex' && a[1] === 'add') throw new Error('already exists');
+    };
+    const o = { out: '' };
+    const code = await runCli(['connect', '--apply', 'codex'], { env: {}, home: w.home, repoRoot, nodePath, exec, which: () => true, out: (s) => (o.out += s), err: () => {} });
+    expect(code).toBe(1);
+    expect(readFileSync(w.file, 'utf8')).toContain('tool_timeout_sec = 600');
+    expect(o.out).toMatch(/FAILED: already exists/);
+  });
+
+  it('says plainly that Codex is registered with the default timeout when the edit fails after add', async () => {
+    const w = world();
+    writeFileSync(w.file, 'mcp_servers.agent-chat.command = "n"\n'); // a form the edit refuses
+    const o = { out: '' };
+    const code = await runCli(['connect', '--apply', 'codex'], { env: {}, home: w.home, repoRoot, nodePath, exec: async () => {}, which: () => true, out: (s) => (o.out += s), err: () => {} });
+    expect(code).toBe(1);
+    expect(o.out).toMatch(/agent-chat is registered in Codex with Codex's default tool timeout/);
+    expect(o.out).toMatch(/cut off/);
+    expect(o.out).toContain('tool_timeout_sec = 600');
+    expect(o.out).toContain('[mcp_servers.agent-chat]');
+    expect(readFileSync(w.file, 'utf8')).toBe('mcp_servers.agent-chat.command = "n"\n');
+  });
+});
+
+describe('wording and manual steps', () => {
+  it('claude step does not claim the timeout is a verified global setting', () => {
+    const claude = planConnect({ targets: ['claude'], repoRoot, home: '/h', nodePath, dshProfiles: [] }).find((s) => /register/.test(s.description))!;
+    expect(claude.description).toMatch(/does not change Claude Code's MCP tool timeout/);
+    expect(claude.description).toMatch(/believed to be controlled by the MCP_TOOL_TIMEOUT environment variable/);
+    expect(claude.description).toMatch(/not been verified on this machine/);
+    expect(claude.description).not.toMatch(/is a global/);
+  });
+
+  it('opencode disconnect under --apply reports manual action, not ok', async () => {
+    const o = { out: '' };
+    const code = await runCli(['disconnect', '--apply', 'opencode'], { env: {}, home: '/h', repoRoot, nodePath, which: () => true, out: (s) => (o.out += s), err: () => {} });
+    expect(code).toBe(0);
+    expect(o.out).toMatch(/manual action required/);
+    expect(o.out).not.toMatch(/^ {2}ok$/m);
+  });
+});
+
+describe('dsh file shape and line endings', () => {
+  const setup = (content: string) => {
+    const home = mk();
+    const dir = join(home, '.dsh/profiles/web');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'cordis.patch.yml');
+    writeFileSync(file, content);
+    return { home, file };
+  };
+  const opts = (home: string) => ({ targets: ['dsh'] as Target[], repoRoot, home, nodePath, dshProfiles: ['web'] });
+
+  it.each([['a flow sequence', '[]\n'], ['a mapping', 'foo: bar\n'], ['a mapping after comments', '# c\n\nfoo: bar\n']])('refuses %s and changes nothing', async (_n, content) => {
+    const { home, file } = setup(content);
+    for (const s of planConnect(opts(home))) await expect(Promise.resolve().then(() => s.run())).rejects.toThrow(/top-level block sequence/);
+    expect(readFileSync(file, 'utf8')).toBe(content);
+    expect(existsSync(`${file}.agent-chat.bak`)).toBe(false);
+  });
+
+  it.each([['empty', ''], ['comments only', '# a\n# b\n'], ['sequence', '# a\n- id: x\n']])('accepts %s', async (_n, content) => {
+    const { home, file } = setup(content);
+    for (const s of planConnect(opts(home))) await s.run();
+    expect(readFileSync(file, 'utf8')).toContain('# >>> agent-chat');
+  });
+
+  it('keeps CRLF and restores the file exactly; written atomically with the same mode', async () => {
+    const original = '# a\r\n- id: x\r\n  config:\r\n    k: 1\r\n';
+    const { home, file } = setup(original);
+    chmodSync(file, 0o640);
+    for (const s of planConnect(opts(home))) await s.run();
+    const out = readFileSync(file, 'utf8');
+    expect(out.replace(/\r\n/g, '')).not.toMatch(/[\r\n]/);
+    expect(statSync(file).mode & 0o777).toBe(0o640);
+    expect(readdirSync(dirname(file)).sort()).toEqual(['cordis.patch.yml', 'cordis.patch.yml.agent-chat.bak']);
+    for (const s of planDisconnect(opts(home))) await s.run();
+    expect(readFileSync(file, 'utf8')).toBe(original);
+  });
 });
