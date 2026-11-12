@@ -1,5 +1,5 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createHubClient, readTokenFromKeychain } from './hubClient';
+import { createHubClient, readTokenFromKeychain, resolveBaseUrl } from './hubClient';
 import { buildMcpServer } from './server';
 
 // stdout carries the MCP protocol; every diagnostic goes to stderr.
@@ -15,13 +15,19 @@ if (!as) {
   process.exit(2);
 }
 
-const baseUrl = `http://127.0.0.1:${process.env.AGENTCHAT_PORT ?? 4317}`;
+let baseUrl: string;
+try {
+  baseUrl = resolveBaseUrl(process.env.AGENTCHAT_PORT);
+} catch (err) {
+  process.stderr.write(`${(err as Error).message}\n`);
+  process.exit(2);
+}
 const invokedByHub = process.env.AGENTCHAT_INVOCATION === '1';
 
 // TEST-ONLY: AGENTCHAT_TOKEN_FOR_TESTS replaces the keychain lookup so automated tests never touch
-// the real keychain. It is not a supported way to configure the server.
+// the real keychain (an empty value counts as unset). It is not a supported way to configure the server.
 const testToken = process.env.AGENTCHAT_TOKEN_FOR_TESTS;
-const getToken = () => (testToken !== undefined ? testToken : readTokenFromKeychain());
+const getToken = () => (testToken !== undefined && testToken !== '' ? testToken : readTokenFromKeychain());
 
 const server = buildMcpServer({ as, client: createHubClient({ baseUrl, as, getToken }), invokedByHub });
 await server.connect(new StdioServerTransport());

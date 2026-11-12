@@ -2,12 +2,8 @@
   "name": "agent-chat",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "packages/*"
-  ],
-  "engines": {
-    "node": ">=22.13"
-  },
+  "workspaces": ["packages/*"],
+  "engines": { "node": ">=22.13" },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",

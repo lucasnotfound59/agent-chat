@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createHubClient, HubUnreachableError, readTokenFromKeychain } from '../src/hubClient';
+import { createHubClient, HubUnreachableError, readTokenFromKeychain, resolveBaseUrl } from '../src/hubClient';
 
 function fakeFetch(res: { status: number; body: unknown } | Error) {
   const calls: { url: string; init: RequestInit }[] = [];
@@ -92,5 +92,66 @@ describe('readTokenFromKeychain', () => {
 
   it('returns null for an empty token', () => {
     expect(readTokenFromKeychain(() => ({ status: 0, stdout: '\n' }))).toBeNull();
+  });
+});
+
+describe('resolveBaseUrl', () => {
+  it('accepts a missing value and decimal ports 1-65535', () => {
+    expect(resolveBaseUrl(undefined)).toBe('http://127.0.0.1:4317');
+    expect(resolveBaseUrl('1')).toBe('http://127.0.0.1:1');
+    expect(resolveBaseUrl('8080')).toBe('http://127.0.0.1:8080');
+    expect(resolveBaseUrl('65535')).toBe('http://127.0.0.1:65535');
+  });
+  it.each(['4317@evil.example', '0', '65536', 'abc', '', ' 4317', '4317/x', '-1', '1e3', '123456'])('rejects %j', (v) => {
+    expect(() => resolveBaseUrl(v)).toThrow();
+  });
+});
+
+describe('createHubClient baseUrl guard', () => {
+  const mk = (baseUrl: string) => () => createHubClient({ baseUrl, as: 'codex', getToken: () => 't' });
+  it('accepts loopback hosts', () => {
+    for (const u of ['http://127.0.0.1:4317', 'http://localhost:4317', 'http://[::1]:4317']) expect(mk(u)).not.toThrow();
+  });
+  it('rejects non-loopback hosts and userinfo', () => {
+    for (const u of ['http://evil.example:4317', 'http://127.0.0.1:4317@evil.example', 'http://user:pw@127.0.0.1:4317', 'not a url'])
+      expect(mk(u)).toThrow();
+  });
+});
+
+describe('createHubClient edge cases', () => {
+  it('a members body that is not an array is an unexpected-response error', async () => {
+    const f = fakeFetch({ status: 200, body: { nope: 1 } });
+    const c = createHubClient({ baseUrl: base, as: 'codex', getToken: () => 'tok', fetchImpl: f.fetchImpl });
+    await expect(c.listMembers()).rejects.toThrow('The hub returned an unexpected members response.');
+  });
+
+  const hangingFetch = () => {
+    const seen: AbortSignal[] = [];
+    const fetchImpl = ((_u: unknown, init?: RequestInit) =>
+      new Promise((_res, rej) => {
+        const s = init!.signal as AbortSignal;
+        seen.push(s);
+        s.addEventListener('abort', () => rej(s.reason));
+      })) as unknown as typeof fetch;
+    return { fetchImpl, seen };
+  };
+
+  it('a timeout is reported as a plain sentence, not as hub-not-running', async () => {
+    const h = hangingFetch();
+    const c = createHubClient({ baseUrl: base, as: 'codex', getToken: () => 'tok', fetchImpl: h.fetchImpl, timeoutMs: 20 });
+    const err = await c.ask('claude', 'q').catch((e) => e);
+    expect(err).not.toBeInstanceOf(HubUnreachableError);
+    expect(err.message).toBe('The hub did not answer within 10 minutes.');
+  });
+
+  it('a caller cancellation aborts the fetch and is not hub-not-running', async () => {
+    const h = hangingFetch();
+    const c = createHubClient({ baseUrl: base, as: 'codex', getToken: () => 'tok', fetchImpl: h.fetchImpl });
+    const ctl = new AbortController();
+    const p = c.ask('claude', 'q', ctl.signal).catch((e) => e);
+    ctl.abort();
+    const err = await p;
+    expect(h.seen[0].aborted).toBe(true);
+    expect(err).not.toBeInstanceOf(HubUnreachableError);
   });
 });
