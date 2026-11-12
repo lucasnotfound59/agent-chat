@@ -2,13 +2,18 @@
   "name": "agent-chat",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
-  "engines": { "node": ">=22.13" },
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "hub": "tsx packages/hub/src/main.ts",
-    "smoke": "tsx packages/hub/scripts/smoke.ts"
+    "smoke": "tsx packages/hub/scripts/smoke.ts",
+    "mcp": "tsx packages/mcp/src/main.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
