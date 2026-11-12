@@ -124,6 +124,18 @@ describe('invokeCli', () => {
     expect(typed).toBe(1);
   });
 
+  it('gives the child the invocation marker', async () => {
+    const r = await invokeCli(
+      { cmd: node, args: ['-e', `console.log(JSON.stringify({text:process.env.AGENTCHAT_INVOCATION,sid:'s'}))`] },
+      req,
+      (stdout) => {
+        const e = jsonLines(stdout)[0];
+        return { text: e.text, sessionId: e.sid };
+      },
+    );
+    expect(r).toMatchObject({ kind: 'reply', body: '1' });
+  });
+
   it('wraps parse failures as crashed with stderr tail', async () => {
     const p = invokeCli({ cmd: node, args: ['-e', `console.error('boom'); process.exit(2)`] }, req, () => {
       throw new Error('no output');

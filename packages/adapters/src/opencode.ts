@@ -1,8 +1,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkCommand, invokeCli, jsonLines } from './cli';
+import { checkCommand, completeCli, invokeCli, jsonLines } from './cli';
 import { buildPrompt } from './prompt';
-import type { AgentAdapter, Availability, InvokeRequest, InvokeResult } from './types';
+import type { AgentAdapter, ArgsRequest, Availability, CompleteRequest, InvokeRequest, InvokeResult } from './types';
 
 export const OPENCODE_AGENT_NAME = 'agentchat';
 
@@ -42,7 +42,7 @@ export function ensureOpenCodeConfig(workdir: string): void {
   if (current !== want) writeFileSync(file, want);
 }
 
-export function opencodeArgs(req: InvokeRequest, prompt: string): string[] {
+export function opencodeArgs(req: ArgsRequest, prompt: string): string[] {
   const args = ['run', '--format', 'json', '--agent', OPENCODE_AGENT_NAME];
   if (req.harnessSessionId) args.push('--session', req.harnessSessionId);
   args.push(prompt);
@@ -76,5 +76,11 @@ export class OpenCodeAdapter implements AgentAdapter {
   invoke(req: InvokeRequest): Promise<InvokeResult> {
     ensureOpenCodeConfig(req.workdir);
     return invokeCli({ cmd: this.cmd, args: opencodeArgs(req, buildPrompt(req)) }, req, parseOpenCode);
+  }
+
+  complete(req: CompleteRequest): Promise<string> {
+    ensureOpenCodeConfig(req.workdir);
+    const args = opencodeArgs({ workdir: req.workdir, harnessSessionId: null }, req.prompt);
+    return completeCli({ cmd: this.cmd, args }, req, parseOpenCode);
   }
 }

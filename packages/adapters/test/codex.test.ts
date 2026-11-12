@@ -25,12 +25,14 @@ const OK = [
 describe('codexArgs', () => {
   it('starts a read-only session in the workdir', () => {
     expect(codexArgs(req)).toEqual([
-      'exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '-C', '/data/workspaces/codex', '-',
+      'exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--disable', 'apps', '--disable', 'plugins',
+      '-s', 'read-only', '-C', '/data/workspaces/codex', '-',
     ]);
   });
   it('resumes with the sandbox set through config', () => {
     expect(codexArgs({ ...req, harnessSessionId: 'abc' })).toEqual([
-      'exec', 'resume', '--json', '--skip-git-repo-check', '-c', 'sandbox_mode="read-only"', 'abc', '-',
+      'exec', 'resume', '--json', '--skip-git-repo-check', '--ignore-user-config', '--disable', 'apps',
+      '--disable', 'plugins', '-c', 'sandbox_mode="read-only"', 'abc', '-',
     ]);
   });
 });

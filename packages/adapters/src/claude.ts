@@ -1,11 +1,11 @@
-import { invokeCli, jsonLines } from './cli';
+import { completeCli, invokeCli, jsonLines } from './cli';
 import { buildPrompt } from './prompt';
 import { runProcess } from './runProcess';
-import type { AgentAdapter, Availability, InvokeRequest, InvokeResult } from './types';
+import type { AgentAdapter, ArgsRequest, Availability, CompleteRequest, InvokeRequest, InvokeResult } from './types';
 
 const TOOLS = 'Read,WebSearch,WebFetch';
 
-export function claudeArgs(req: InvokeRequest): string[] {
+export function claudeArgs(req: ArgsRequest): string[] {
   const args = ['-p', '--output-format', 'json', '--tools', TOOLS, '--allowedTools', TOOLS, '--strict-mcp-config'];
   if (req.harnessSessionId) args.push('--resume', req.harnessSessionId);
   return args;
@@ -56,5 +56,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
   invoke(req: InvokeRequest): Promise<InvokeResult> {
     return invokeCli({ cmd: this.cmd, args: claudeArgs(req), stdin: buildPrompt(req) }, req, parseClaude);
+  }
+
+  complete(req: CompleteRequest): Promise<string> {
+    const args = claudeArgs({ workdir: req.workdir, harnessSessionId: null });
+    return completeCli({ cmd: this.cmd, args, stdin: req.prompt }, req, parseClaude);
   }
 }

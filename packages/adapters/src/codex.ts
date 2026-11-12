@@ -1,15 +1,18 @@
-import { checkCommand, invokeCli, jsonLines } from './cli';
+import { checkCommand, completeCli, invokeCli, jsonLines } from './cli';
 import { buildPrompt } from './prompt';
-import type { AgentAdapter, Availability, InvokeRequest, InvokeResult } from './types';
+import type { AgentAdapter, ArgsRequest, Availability, CompleteRequest, InvokeRequest, InvokeResult } from './types';
 
-export function codexArgs(req: InvokeRequest): string[] {
+// Together these three flags stop Codex loading the user's MCP servers, apps and plugins.
+const NO_USER_MCP = ['--ignore-user-config', '--disable', 'apps', '--disable', 'plugins'];
+
+export function codexArgs(req: ArgsRequest): string[] {
   if (req.harnessSessionId) {
     return [
-      'exec', 'resume', '--json', '--skip-git-repo-check', '-c', 'sandbox_mode="read-only"',
+      'exec', 'resume', '--json', '--skip-git-repo-check', ...NO_USER_MCP, '-c', 'sandbox_mode="read-only"',
       req.harnessSessionId, '-',
     ];
   }
-  return ['exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '-C', req.workdir, '-'];
+  return ['exec', '--json', '--skip-git-repo-check', ...NO_USER_MCP, '-s', 'read-only', '-C', req.workdir, '-'];
 }
 
 export function parseCodex(stdout: string, fallbackSessionId: string | null): { text: string; sessionId: string } {
@@ -39,5 +42,10 @@ export class CodexAdapter implements AgentAdapter {
 
   invoke(req: InvokeRequest): Promise<InvokeResult> {
     return invokeCli({ cmd: this.cmd, args: codexArgs(req), stdin: buildPrompt(req) }, req, parseCodex);
+  }
+
+  complete(req: CompleteRequest): Promise<string> {
+    const args = codexArgs({ workdir: req.workdir, harnessSessionId: null });
+    return completeCli({ cmd: this.cmd, args, stdin: req.prompt }, req, parseCodex);
   }
 }

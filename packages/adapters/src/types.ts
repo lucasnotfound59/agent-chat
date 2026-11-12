@@ -21,6 +21,16 @@ export interface InvokeRequest {
   onTyping?: () => void;
 }
 
+export interface CompleteRequest {
+  prompt: string;
+  workdir: string;
+  signal: AbortSignal;
+  timeoutMs: number;
+}
+
+/** The only parts of a request the argument builders depend on. */
+export type ArgsRequest = Pick<InvokeRequest, 'workdir' | 'harnessSessionId'>;
+
 export type InvokeResult =
   | { kind: 'reply'; body: string; harnessSessionId: string }
   | { kind: 'silent'; harnessSessionId: string };
@@ -37,6 +47,8 @@ export interface AgentAdapter {
   readonly defaultBio: string;
   check(): Promise<Availability>;
   invoke(req: InvokeRequest): Promise<InvokeResult>;
+  /** One-shot raw prompt in a fresh session; returns trimmed non-empty text or throws AdapterError('crashed'). */
+  complete(req: CompleteRequest): Promise<string>;
 }
 
 export type AdapterErrorCode = 'timeout' | 'aborted' | 'crashed' | 'unavailable';

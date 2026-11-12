@@ -1,7 +1,9 @@
 import { runProcess } from './runProcess';
 import { toResult } from './prompt';
 import { AdapterError } from './types';
-import type { Availability, InvokeRequest, InvokeResult } from './types';
+import type { Availability, CompleteRequest, InvokeRequest, InvokeResult } from './types';
+
+export const INVOCATION_ENV = { AGENTCHAT_INVOCATION: '1' };
 
 export function jsonLines(stdout: string): Record<string, any>[] {
   const out: Record<string, any>[] = [];
@@ -32,6 +34,7 @@ export async function invokeCli(
     cwd: req.workdir,
     signal: req.signal,
     timeoutMs: req.timeoutMs,
+    env: { ...process.env, ...INVOCATION_ENV },
   });
   let parsed: { text: string; sessionId: string };
   try {
@@ -40,6 +43,30 @@ export async function invokeCli(
     throw new AdapterError('crashed', `${(e as Error).message}; exit ${r.code}; ${r.stderr.slice(-500).trim()}`);
   }
   return toResult(parsed.text, parsed.sessionId, req.isGroup);
+}
+
+export async function completeCli(
+  spec: { cmd: string; args: string[]; stdin?: string },
+  req: CompleteRequest,
+  parse: ParseOutput,
+): Promise<string> {
+  const r = await runProcess({
+    cmd: spec.cmd,
+    args: spec.args,
+    stdin: spec.stdin,
+    cwd: req.workdir,
+    signal: req.signal,
+    timeoutMs: req.timeoutMs,
+    env: { ...process.env, ...INVOCATION_ENV },
+  });
+  let text: string;
+  try {
+    text = parse(r.stdout, null).text.trim();
+  } catch (e) {
+    throw new AdapterError('crashed', `${(e as Error).message}; exit ${r.code}; ${r.stderr.slice(-500).trim()}`);
+  }
+  if (!text) throw new AdapterError('crashed', 'agent returned empty text');
+  return text;
 }
 
 export async function checkCommand(cmd: string, label: string): Promise<Availability> {

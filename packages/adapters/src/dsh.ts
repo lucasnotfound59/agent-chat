@@ -1,8 +1,8 @@
-import { checkCommand, invokeCli, jsonLines } from './cli';
+import { checkCommand, completeCli, invokeCli, jsonLines } from './cli';
 import { buildPrompt } from './prompt';
-import type { AgentAdapter, Availability, InvokeRequest, InvokeResult } from './types';
+import type { AgentAdapter, ArgsRequest, Availability, CompleteRequest, InvokeRequest, InvokeResult } from './types';
 
-export function dshArgs(req: InvokeRequest, patchPath: string | null): string[] {
+export function dshArgs(req: ArgsRequest, patchPath: string | null): string[] {
   const args = ['--profile', 'headless'];
   if (patchPath) args.push('--patch', patchPath);
   args.push('--json', '--permission-mode', 'read-only', '--approval-policy', 'never');
@@ -61,5 +61,10 @@ export class DshAdapter implements AgentAdapter {
 
   invoke(req: InvokeRequest): Promise<InvokeResult> {
     return invokeCli({ cmd: this.cmd, args: dshArgs(req, this.patchPath()), stdin: buildPrompt(req) }, req, parseDsh);
+  }
+
+  complete(req: CompleteRequest): Promise<string> {
+    const args = dshArgs({ workdir: req.workdir, harnessSessionId: null }, this.patchPath());
+    return completeCli({ cmd: this.cmd, args, stdin: req.prompt }, req, parseDsh);
   }
 }
