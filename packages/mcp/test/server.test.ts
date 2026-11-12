@@ -107,7 +107,18 @@ describe('buildMcpServer', () => {
   });
 
   it('cannot call the tools by name when invoked by the hub, and never reaches the client', async () => {
-    const fc = fakeClient({ listMembers: async () => { throw new Error('list called'); } });
+    let listCalls = 0;
+    let askCalls = 0;
+    const fc = fakeClient({
+      listMembers: async () => {
+        listCalls++;
+        return [];
+      },
+      ask: async () => {
+        askCalls++;
+        return 'x';
+      },
+    });
     const c = await connect(fc, true);
     for (const call of [
       { name: 'ask', arguments: { to: 'claude', question: 'q' } },
@@ -116,7 +127,8 @@ describe('buildMcpServer', () => {
       const r = await c.callTool(call).then((x) => x, (e) => ({ isError: true, thrown: e }));
       expect(r.isError).toBe(true);
     }
-    expect(fc.asked).toEqual([]);
+    expect(listCalls).toBe(0);
+    expect(askCalls).toBe(0);
   });
 
   it('cancelling a tool call aborts the in-flight hub request', async () => {

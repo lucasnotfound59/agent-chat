@@ -68,6 +68,7 @@ export function createHubClient(opts: {
     try {
       res = await doFetch(`${opts.baseUrl}${path}`, {
         ...init,
+        redirect: 'error',
         headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}` },
       });
     } catch (err) {
@@ -77,6 +78,10 @@ export function createHubClient(opts: {
           throw new Error('The hub did not answer within 10 minutes.');
         }
         throw err;
+      }
+      // undici reports a refused redirect as a TypeError whose cause says "unexpected redirect".
+      if (/unexpected redirect/i.test(String((err as { cause?: { message?: unknown } }).cause?.message ?? ''))) {
+        throw new Error('The hub answered with a redirect, which is not allowed.');
       }
       throw new HubUnreachableError(`could not reach the hub: ${(err as Error).message}`);
     }

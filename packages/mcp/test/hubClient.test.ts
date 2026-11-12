@@ -74,6 +74,34 @@ describe('createHubClient', () => {
   });
 });
 
+describe('createHubClient redirects', () => {
+  it('sends every request with redirect: error', async () => {
+    const f = fakeFetch({ status: 200, body: [] });
+    const c = createHubClient({ baseUrl: base, as: 'codex', getToken: () => 'tok', fetchImpl: f.fetchImpl });
+    await c.listMembers();
+    const g = fakeFetch({ status: 200, body: { reply: 'r' } });
+    await createHubClient({ baseUrl: base, as: 'codex', getToken: () => 'tok', fetchImpl: g.fetchImpl }).ask('claude', 'q');
+    expect(f.calls[0].init.redirect).toBe('error');
+    expect(g.calls[0].init.redirect).toBe('error');
+  });
+
+  it('a real redirect is refused with a clear message', async () => {
+    const http = await import('node:http');
+    const srv = http.createServer((_q, res) => {
+      res.statusCode = 307;
+      res.setHeader('location', 'http://127.0.0.1:9/elsewhere');
+      res.end();
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const port = (srv.address() as { port: number }).port;
+    const c = createHubClient({ baseUrl: `http://127.0.0.1:${port}`, as: 'codex', getToken: () => 'tok' });
+    const err = await c.ask('claude', 'q').catch((e) => e);
+    await new Promise((r) => srv.close(r));
+    expect(err).not.toBeInstanceOf(HubUnreachableError);
+    expect(err.message).toBe('The hub answered with a redirect, which is not allowed.');
+  });
+});
+
 describe('readTokenFromKeychain', () => {
   it('reads the AgentChat/hub-token item and trims the trailing newline', () => {
     let args: string[] = [];
