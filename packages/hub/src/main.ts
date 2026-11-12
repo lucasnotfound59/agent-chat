@@ -18,7 +18,7 @@ import { Scheduler } from './scheduler';
 import { Bus, buildServer } from './server';
 import { Store } from './store';
 import { KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE, KeychainTokenStore, ensureToken } from './tokenStore';
-import { AgentTriage, pickTriageAdapter } from './triage';
+import { createAgentTriage, pickTriageAdapter } from './triage';
 
 const dataDir = process.env.AGENTCHAT_DATA_DIR ?? join(homedir(), 'Library', 'Application Support', 'AgentChat');
 const port = Number(process.env.AGENTCHAT_PORT ?? 4317);
@@ -66,9 +66,7 @@ const scheduler = new Scheduler({
   triage: () => {
     const a = pickTriageAdapter(config.get().triageAgent, adapters, (n) => availability.get(n)?.ok ?? false);
     if (!a) return null;
-    const workdir = join(dataDir, 'workspaces', `${a.name}-triage`);
-    mkdirSync(workdir, { recursive: true });
-    return new AgentTriage(a, workdir);
+    return createAgentTriage(a, join(dataDir, 'workspaces', `${a.name}-triage`));
   },
   emit: (e) => bus.emit(e),
   dataDir,
