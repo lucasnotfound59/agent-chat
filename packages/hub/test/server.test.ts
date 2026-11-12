@@ -8,6 +8,7 @@ import WebSocket from 'ws';
 import { FakeAdapter } from '@agent-chat/adapters';
 import { seed } from '../src/bootstrap';
 import { ConfigStore } from '../src/config';
+import { MemoryTokenStore, ensureToken } from '../src/tokenStore';
 import { Scheduler } from '../src/scheduler';
 import { Bus, buildServer } from '../src/server';
 import { Store } from '../src/store';
@@ -16,6 +17,8 @@ let app: FastifyInstance;
 let bus: Bus;
 let store: Store;
 let config: ConfigStore;
+let tokenStore: MemoryTokenStore;
+let token: string;
 let fa: FakeAdapter;
 let fb: FakeAdapter;
 let dataDir: string;
@@ -36,6 +39,8 @@ beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'agentchat-srv-'));
   store = new Store(':memory:');
   config = new ConfigStore(dataDir);
+  tokenStore = new MemoryTokenStore(ensureToken(new MemoryTokenStore(), null));
+  token = tokenStore.get()!;
   fa = new FakeAdapter('fake-a', 'A');
   fb = new FakeAdapter('fake-b', 'B');
   seed(store, [fa, fb]);
@@ -55,8 +60,8 @@ beforeEach(() => {
     dataDir,
     isAvailable: (n) => availability.get(n)?.ok ?? false,
   });
-  app = buildServer({ store, scheduler, config, bus, availability });
-  auth = { authorization: `Bearer ${config.get().token}` };
+  app = buildServer({ store, scheduler, config, token: () => tokenStore.get()!, bus, availability });
+  auth = { authorization: `Bearer ${token}` };
 });
 
 afterEach(async () => {
@@ -340,7 +345,7 @@ describe('websocket', () => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
     ws.on('message', (d) => received.push(JSON.parse(d.toString())));
     await new Promise((r) => ws.on('open', r));
-    ws.send(JSON.stringify({ type: 'auth', token: config.get().token }));
+    ws.send(JSON.stringify({ type: 'auth', token: token }));
     await until(() => received.some((e) => e.type === 'ready'));
 
     const s = await state();

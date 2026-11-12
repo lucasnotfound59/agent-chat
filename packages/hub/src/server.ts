@@ -32,6 +32,7 @@ export interface ServerDeps {
   store: Store;
   scheduler: Scheduler;
   config: ConfigStore;
+  token: () => string;
   bus: Bus;
   availability: Map<string, Availability>;
 }
@@ -102,7 +103,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (req.routeOptions.url === '/ws') return;
     const header = req.headers.authorization;
     const given = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : undefined;
-    if (!tokenMatches(config.get().token, given)) return reply.code(401).send({ error: 'unauthorized' });
+    if (!tokenMatches(deps.token(), given)) return reply.code(401).send({ error: 'unauthorized' });
   });
 
   app.register(async (ws) => {
@@ -116,7 +117,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         } catch {
           // handled below
         }
-        if (msg?.type !== 'auth' || !tokenMatches(config.get().token, msg.token)) {
+        if (msg?.type !== 'auth' || !tokenMatches(deps.token(), msg.token)) {
           socket.close(4001, 'unauthorized');
           return;
         }

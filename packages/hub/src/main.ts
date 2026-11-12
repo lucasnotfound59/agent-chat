@@ -16,6 +16,7 @@ import { ConfigStore } from './config';
 import { Scheduler } from './scheduler';
 import { Bus, buildServer } from './server';
 import { Store } from './store';
+import { KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE, KeychainTokenStore, ensureToken } from './tokenStore';
 import { OpenAITriage } from './triage';
 
 const dataDir = process.env.AGENTCHAT_DATA_DIR ?? join(homedir(), 'Library', 'Application Support', 'AgentChat');
@@ -23,6 +24,8 @@ const port = Number(process.env.AGENTCHAT_PORT ?? 4317);
 
 mkdirSync(dataDir, { recursive: true });
 const config = new ConfigStore(dataDir);
+const tokenStore = new KeychainTokenStore();
+const token = ensureToken(tokenStore, config.takeLegacyToken());
 const store = new Store(join(dataDir, 'agentchat.db'));
 const bus = new Bus();
 
@@ -66,7 +69,7 @@ const scheduler = new Scheduler({
   isAvailable: (name) => availability.get(name)?.ok ?? false,
 });
 
-const app = buildServer({ store, scheduler, config, bus, availability });
+const app = buildServer({ store, scheduler, config, token: () => token, bus, availability });
 
 await refreshAvailability();
 setInterval(() => void refreshAvailability(), 60000).unref();
@@ -74,7 +77,7 @@ await app.listen({ port, host: '127.0.0.1' });
 
 console.log(`Agent Chat hub: http://127.0.0.1:${port}`);
 console.log(`数据目录: ${dataDir}`);
-console.log(`令牌保存在: ${join(dataDir, 'config.json')}`);
+console.log(`令牌保存在 macOS 钥匙串（服务名 ${KEYCHAIN_SERVICE}，账户名 ${KEYCHAIN_ACCOUNT}）`);
 if (interrupted > 0) console.log(`上次有 ${interrupted} 次唤起未完成，已标记为中断。`);
 for (const a of adapterList) {
   const s = availability.get(a.name)!;
