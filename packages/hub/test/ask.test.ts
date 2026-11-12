@@ -111,6 +111,60 @@ describe('ask conversation', () => {
     expect((await p1).reply).toBe('r1');
     expect((await p2).reply).toBe('r2');
     expect(t.fa.calls).toHaveLength(2);
+    expect(t.fa.calls[0].newMessages.map((m) => m.body)).toEqual(['q1']);
+    expect(t.fa.calls[1].newMessages.map((m) => m.body)).toEqual(['q2']);
+  });
+
+  it('presents each of several same-tick asks with exactly its own question', async () => {
+    const t = make();
+    const outs = await Promise.all([t.ask({ question: 'q1' }), t.ask({ question: 'q2' }), t.ask({ question: 'q3' })]);
+    expect(outs.map((o) => o.reply)).toEqual(['reply from A', 'reply from A', 'reply from A']);
+    expect(t.fa.calls.map((c) => c.newMessages.map((m) => m.body))).toEqual([['q1'], ['q2'], ['q3']]);
+    await t.ask({ question: 'q4' });
+    expect(t.fa.calls[3].newMessages.map((m) => m.body)).toEqual(['q4']);
+  });
+
+  it('lets a waiting ask abort promptly without disturbing the queue', async () => {
+    const t = make();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let n = 0;
+    t.fa.handler = async () => {
+      n++;
+      if (n === 1) await gate;
+      return { kind: 'reply', body: `r${n}`, harnessSessionId: 's' };
+    };
+    const p1 = t.ask({ question: 'q1' });
+    const ctl = new AbortController();
+    const p2 = t.failure(t.ask({ question: 'q2', signal: ctl.signal }));
+    const p3 = t.ask({ question: 'q3' });
+    await new Promise((r) => setTimeout(r, 20));
+    ctl.abort();
+    expect((await p2).code).toBe('aborted'); // resolves while ask 1 is still running
+    expect(t.fa.calls).toHaveLength(1);
+    release();
+    expect((await p1).reply).toBe('r1');
+    expect((await p3).reply).toBe('r2');
+    expect(t.fa.calls).toHaveLength(2);
+    // The aborted q2 was never answered; it stays in the conversation and is shown along with q3.
+    expect(t.fa.calls[1].newMessages.map((m) => m.body)).toEqual(['q2', 'q3']);
+  });
+
+  it('scheduler.onMessage ignores messages of an ask conversation', async () => {
+    vi.useFakeTimers();
+    const t = make({ triage: true });
+    t.triage.pickNames = 'ALL';
+    const p = t.ask({});
+    await vi.advanceTimersByTimeAsync(10);
+    await p;
+    const conv = t.askConvs()[0];
+    for (const m of t.store.listMessages(conv.id)) t.scheduler.onMessage(m);
+    t.scheduler.onMessage(t.store.addMessage({ conversationId: conv.id, senderId: t.human.id, body: 'x' }));
+    const before = t.fa.calls.length + t.fb.calls.length;
+    await t.settle();
+    expect(t.fa.calls.length + t.fb.calls.length).toBe(before);
+    expect(t.triage.calls).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
@@ -124,6 +178,7 @@ describe('validation', () => {
       { to: '我' },
       { question: '   ' },
       { question: undefined },
+      { question: 'x'.repeat(20001) },
     ]) {
       const e = await t.failure(t.ask(o));
       expect(e).toBeInstanceOf(AskError);
@@ -155,6 +210,9 @@ describe('failure paths', () => {
     t.scheduler.stopAll();
     expect((await t.failure(t.ask({}))).code).toBe('stopped');
     expect(t.fa.calls).toHaveLength(0);
+    expect(t.askConvs()).toHaveLength(0);
+    expect(t.store.listMessages(t.dm.id)).toHaveLength(0);
+    expect(t.events.filter((e) => e.type === 'message' || e.type === 'conversation')).toHaveLength(0);
   });
 
   it('stopAll aborts an ask in progress', async () => {
@@ -165,6 +223,8 @@ describe('failure paths', () => {
     t.scheduler.stopAll();
     expect((await p).code).toBe('aborted');
     expect(t.fa.calls[0].signal.aborted).toBe(true);
+    const invs = t.store.listInvocations(t.askConvs()[0].id);
+    expect(invs.map((i) => i.outcome)).toEqual(['interrupted']);
   });
 
   it('aborts the adapter and marks the invocation interrupted when the caller aborts', async () => {
@@ -177,8 +237,7 @@ describe('failure paths', () => {
     expect((await p).code).toBe('aborted');
     expect(t.fa.calls[0].signal.aborted).toBe(true);
     const conv = t.askConvs()[0];
-    const inv = t.store.countInvocationsSince(conv.id, 0);
-    expect(inv).toBe(1);
+    expect(t.store.listInvocations(conv.id).map((i) => i.outcome)).toEqual(['interrupted']);
     expect(t.events.filter((e) => e.type === 'typing').map((e: any) => e.active)).toEqual([true, false]);
   });
 
@@ -187,10 +246,12 @@ describe('failure paths', () => {
     const e1 = await t.ask({});
     expect(e1.reply).toBeTruthy();
     const conv = t.askConvs()[0];
+    const normalBefore = t.store.listMessages(conv.id).filter((m) => m.kind === 'normal').length;
     t.store.updateSettings(conv.id, { dailyInvocationCap: 0 });
     const e = await t.failure(t.ask({}));
     expect(e.code).toBe('capped');
     expect(t.fa.calls).toHaveLength(1);
+    expect(t.store.listMessages(conv.id).filter((m) => m.kind === 'normal')).toHaveLength(normalBefore);
     expect(t.store.listMessages(conv.id).filter((m) => m.kind === 'system')).toHaveLength(1);
   });
 

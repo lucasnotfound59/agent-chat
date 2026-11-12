@@ -244,12 +244,13 @@ export class Scheduler {
     reason: string,
     signal: AbortSignal,
     retryable: boolean,
+    upToSeq?: number,
   ): Promise<Execution> {
     const { store, emit } = this.deps;
     const invocationId = store.startInvocation(conv.id, agent.id, reason);
     try {
       emit({ type: 'typing', conversationId: conv.id, memberId: agent.id, active: true });
-      const { result, seenSeq } = await this.callAdapter(adapter, conv, agent, signal);
+      const { result, seenSeq } = await this.callAdapter(adapter, conv, agent, signal, upToSeq);
       store.setAgentSession(conv.id, agent.id, result.harnessSessionId, seenSeq);
       if (result.kind === 'reply') {
         const members = store.listConversationMembers(conv.id);
@@ -301,7 +302,12 @@ export class Scheduler {
    * Invokes the answering agent of an `ask` conversation. Calls for the same conversation run one
    * after another; no round state is touched and the scheduler never reacts to the stored messages.
    */
-  invokeForAsk(conversationId: string, agentMemberId: string, signal: AbortSignal): Promise<AskInvokeResult> {
+  invokeForAsk(
+    conversationId: string,
+    agentMemberId: string,
+    signal: AbortSignal,
+    questionSeq: number,
+  ): Promise<AskInvokeResult> {
     const ctl = new AbortController();
     this.askAborts.add(ctl);
     const combined = AbortSignal.any([signal, ctl.signal]);
@@ -317,7 +323,7 @@ export class Scheduler {
         if (!this.underDailyCap(conv, this.state(conversationId))) {
           return { kind: 'capped', message: `今日唤起次数已达上限（${conv.settings.dailyInvocationCap}）` };
         }
-        return await this.execute(conv, agent, adapter, 'ask', combined, false);
+        return await this.execute(conv, agent, adapter, 'ask', combined, false, questionSeq);
       } catch (e) {
         console.error('[scheduler] ask invocation failed', e);
         return { kind: 'error', message: (e as Error).message };
@@ -325,13 +331,35 @@ export class Scheduler {
         this.askAborts.delete(ctl);
       }
     };
+    let started = false;
     const prev = this.askChains.get(conversationId) ?? Promise.resolve();
-    const next = prev.then(run);
+    const next = prev.then(() => {
+      started = true;
+      return run();
+    });
     const tail = next.finally(() => {
       if (this.askChains.get(conversationId) === tail) this.askChains.delete(conversationId);
     });
     this.askChains.set(conversationId, tail);
-    return next;
+    // A waiting ask whose caller aborts resolves right away; its chain link then returns without invoking.
+    return new Promise<AskInvokeResult>((resolve) => {
+      combined.addEventListener(
+        'abort',
+        () => {
+          if (!started) resolve({ kind: 'aborted', message: '提问已中止' });
+        },
+        { once: true },
+      );
+      void next.then(resolve);
+    });
+  }
+
+  /** Pre-flight for an ask, before anything is stored. May post the once-a-day cap notice. */
+  askAdmission(conversationId: string | null): 'stopped' | 'capped' | null {
+    if (this.stopped) return 'stopped';
+    const conv = conversationId ? this.deps.store.getConversation(conversationId) : null;
+    if (conv && !this.underDailyCap(conv, this.state(conv.id))) return 'capped';
+    return null;
   }
 
   private async callAdapter(
@@ -339,15 +367,16 @@ export class Scheduler {
     conv: Conversation,
     agent: Member,
     signal: AbortSignal,
+    upToSeq?: number,
   ): Promise<{ result: InvokeResult; seenSeq: number }> {
     const session = this.deps.store.getAgentSession(conv.id, agent.id);
-    const first = this.buildRequest(conv, agent, session, signal);
+    const first = this.buildRequest(conv, agent, session, signal, upToSeq);
     try {
       return { result: await adapter.invoke(first.req), seenSeq: first.seenSeq };
     } catch (e) {
       // A stored harness session may be gone; start over once with recent history.
       if (session && e instanceof AdapterError && e.code === 'crashed') {
-        const fresh = this.buildRequest(conv, agent, null, signal);
+        const fresh = this.buildRequest(conv, agent, null, signal, upToSeq);
         return { result: await adapter.invoke(fresh.req), seenSeq: fresh.seenSeq };
       }
       throw e;
@@ -359,13 +388,18 @@ export class Scheduler {
     agent: Member,
     session: Session | null,
     signal: AbortSignal,
+    upToSeq?: number,
   ): { req: InvokeRequest; seenSeq: number } {
     const { store, dataDir } = this.deps;
     const members = store.listConversationMembers(conv.id);
     const nameOf = (id: string | null) => members.find((m) => m.id === id)?.name ?? '系统';
+    // `upToSeq` (ask path) hides messages stored after this ask's own question, so queued asks
+    // each present exactly their own question.
     const source = session
-      ? store.listMessagesAfter(conv.id, session.lastSeenSeq).filter((m) => m.senderId !== agent.id)
-      : store.listMessages(conv.id, { limit: HISTORY_REPLAY });
+      ? store
+          .listMessagesAfter(conv.id, session.lastSeenSeq)
+          .filter((m) => m.senderId !== agent.id && (upToSeq === undefined || m.seq <= upToSeq))
+      : store.listMessages(conv.id, { limit: HISTORY_REPLAY, beforeSeq: upToSeq === undefined ? undefined : upToSeq + 1 });
     const messages = source.filter((m) => m.kind === 'normal').slice(-MAX_NEW_MESSAGES);
     const workdir = join(dataDir, 'workspaces', agent.adapter!);
     mkdirSync(workdir, { recursive: true });
@@ -386,7 +420,7 @@ export class Scheduler {
       signal,
       timeoutMs: conv.settings.timeoutMs,
     };
-    return { req, seenSeq: store.maxSeq(conv.id) };
+    return { req, seenSeq: upToSeq ?? store.maxSeq(conv.id) };
   }
 
   /** Copies an attachment into the agent's workdir so every harness can read it. */

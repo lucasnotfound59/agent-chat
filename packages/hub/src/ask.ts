@@ -23,6 +23,8 @@ export interface AskDeps {
   emit?: (e: HubEvent) => void;
 }
 
+const MAX_QUESTION = 20000;
+
 export class AskService {
   constructor(private readonly deps: AskDeps) {}
 
@@ -30,6 +32,7 @@ export class AskService {
     const { store, scheduler } = this.deps;
     const question = typeof input.question === 'string' ? input.question.trim() : '';
     if (!question) throw new AskError('bad_request', '问题不能为空');
+    if (question.length > MAX_QUESTION) throw new AskError('bad_request', `问题太长（最多 ${MAX_QUESTION} 个字符）`);
     const agents = store.listMembers().filter((m) => m.kind === 'agent');
     const asker = typeof input.as === 'string' ? agents.find((m) => m.adapter === input.as) : undefined;
     if (!asker) throw new AskError('bad_request', `无法识别提问者：${String(input.as)}`);
@@ -43,6 +46,11 @@ export class AskService {
       throw new AskError('unavailable', `${target.name} 现在不可用：${this.deps.availabilityReason(adapter) ?? '未知原因'}`);
     }
 
+    // Refuse before storing anything when the hub is stopped or the conversation is at its daily cap.
+    const gate = scheduler.askAdmission(store.findAskConversation(asker.id, target.id)?.id ?? null);
+    if (gate === 'stopped') throw new AskError('stopped', '已全局停止，暂不处理提问');
+    if (gate === 'capped') throw new AskError('capped', '今日唤起次数已达上限');
+
     // Find-or-create and the question insert are synchronous, so concurrent asks cannot create two.
     const { conversation, created } = this.conversationFor(asker, target);
     if (created) this.emit({ type: 'conversation', conversation });
@@ -54,7 +62,7 @@ export class AskService {
     });
     this.emit({ type: 'message', message });
 
-    const result = await scheduler.invokeForAsk(conversation.id, target.id, input.signal);
+    const result = await scheduler.invokeForAsk(conversation.id, target.id, input.signal, message.seq);
     switch (result.kind) {
       case 'reply':
         return { reply: result.body, conversationId: conversation.id };

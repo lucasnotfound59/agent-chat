@@ -469,6 +469,7 @@ describe('ask routes', () => {
     await pending;
     await until(() => fa.calls[1].signal.aborted);
     const conv = store.listConversations().find((c) => c.kind === 'ask')!;
-    expect(store.countInvocationsSince(conv.id, 0)).toBe(2);
+    await until(() => store.listInvocations(conv.id).length === 2 && store.listInvocations(conv.id)[1].outcome);
+    expect(store.listInvocations(conv.id).map((i) => i.outcome)).toEqual(['replied', 'interrupted']);
   });
 });

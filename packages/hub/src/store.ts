@@ -273,6 +273,13 @@ export class Store {
     };
   }
 
+  listInvocations(conversationId: string): Invocation[] {
+    return this.db
+      .prepare('SELECT id FROM invocations WHERE conversation_id = ? ORDER BY started_at, rowid')
+      .all(conversationId)
+      .map((r: Row) => this.getInvocation(r.id as string)!);
+  }
+
   countInvocationsSince(conversationId: string, sinceMs: number): number {
     const r = this.db
       .prepare('SELECT COUNT(*) AS n FROM invocations WHERE conversation_id = ? AND started_at >= ?')
