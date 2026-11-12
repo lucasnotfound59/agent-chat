@@ -19,7 +19,7 @@
 3. 一键登记脚本，把 MCP server 登记到检测到的各个软件里。
 4. 点名模型改为走已登录的 agent，移除需要 API key 的实现。
 5. 访问令牌改存 macOS 钥匙串。
-6. 聊天时默认不加载各 harness 里用户配置的 MCP 服务，可按 agent 打开。
+6. 聊天时不加载各 harness 里用户配置的 MCP 服务、插件和连接器（“按 agent 打开”的开关推迟到界面那一期）。
 
 本期不做：网页界面；干活中的 agent 向群聊发言或读取聊天记录；向人类提问并等人类回答；别人主动找到某个正在干活的会话；拾潮；打包。
 
@@ -29,7 +29,7 @@
 - 提问者的身份就是该 agent 本人：干活中的 Codex 和聊天里的 Codex 是同一个联系人，消息上带"来自工作会话"的标记。
 - 接入形态是一个 MCP server，由各软件自己启动（stdio 方式）。
 - 整个软件不使用任何 API key。
-- 访问令牌存钥匙串；聊天时 MCP 默认关闭、可按 agent 打开；每日唤起上限对所有会话生效。
+- 访问令牌存钥匙串；聊天时 MCP 关闭（按 agent 打开的开关在界面那一期做）；每日唤起上限对所有会话生效。
 
 ## 4. 架构
 
@@ -127,11 +127,20 @@ packages/
 
 用户在各 harness 里配置的 MCP 服务运行在 harness 的只读限制之外（例如 Codex 的 computer-use 插件）。因此：
 
-- 聊天时（包括回答提问和点名）默认不加载任何用户配置的 MCP 服务。
-- 配置项 `chatMcp`：按适配器名的开关，默认全部关闭。打开后该 agent 在聊天里能用用户配的 MCP 工具，中枢不再保证它只读。
-- 无论开关如何，`agent-chat` 这个 server 在聊天时始终不加载。
+- 聊天时（包括回答提问和点名）不加载任何用户配置的 MCP 服务、插件或账号连接器。
+- 本期只做"全部关闭"。"按 agent 打开"的开关推迟到网页界面那一期，和设置页一起做，因为没有界面时没人能用到它，而每个 harness 的"只放行一部分"都要单独研究。
+- `agent-chat` 这个 server 在聊天时始终不加载。
 
-各 harness 的关闭方式在实施时逐个实测确定（Claude Code 已有 `--strict-mcp-config`；Codex 按服务逐个禁用；OpenCode 在工作目录配置里处理；DSH 待查）。实测的判定标准：被唤起的 agent 列不出、也调用不了任何 MCP 工具。
+各 harness 的关闭方式（2026-11-12 本机实测）：
+
+| harness | 方式 | 状态 |
+|---|---|---|
+| Claude Code | 已有 `--strict-mcp-config` | 第一期已做 |
+| Codex | `--ignore-user-config --disable apps --disable plugins`，新会话和续接都要带 | 已实测：默认情况下聊天里的 Codex 能看到 `mcp__codex_apps__gmail`、`google_drive`、`github` 等连接器；加上这三个参数后报告没有任何 MCP 工具，续接正常。只加 `--ignore-user-config` 不够，按服务逐个 `-c mcp_servers.<名>.enabled=false` 会因插件提供的服务而报错 |
+| OpenCode | 工作目录里的只读 agent `agentchat` 的权限规则 | 待实测：登记一个 MCP 服务后确认该 agent 列不出也调不了它的工具 |
+| DSH | headless 配置默认没有任何 MCP 服务 | 用户若自己往 headless 配置里加了 MCP 服务，本期不处理，README 里说明 |
+
+判定标准：被唤起的 agent 列不出、也调用不了任何 MCP 工具。
 
 ### 4.6 令牌进钥匙串
 
@@ -140,12 +149,18 @@ packages/
 - 中枢、MCP server、README 里的 curl 用法都从钥匙串取令牌。
 - 代码里令牌的读写藏在一个小接口后面，测试用内存实现，不碰真实钥匙串。
 
-**需要实测并如实告知的一点**：钥匙串能挡住"读文件"类工具，但带 shell 的 agent（Codex、DSH 的只读沙箱里仍能执行只读命令）有可能直接运行 `security` 把令牌读出来。实施时用一个假条目测试各 harness 的沙箱是否拦截；结果写进 README。移除点名密钥之后，令牌是唯一的秘密，泄露的后果限于本机进程能操作中枢。
+**钥匙串的保护范围（2026-11-12 本机用假条目实测）**：
+
+- Codex 的只读沙箱拦截钥匙串访问，读不到。
+- DSH 的只读沙箱不拦截：它执行 `security find-generic-password` 能读出条目内容。
+- Claude Code 和 OpenCode 在聊天里没有 shell 工具，无从执行该命令。
+
+所以钥匙串挡住了"读文件"这条路，但挡不住 DSH。移除点名密钥之后，令牌是唯一的秘密，泄露的后果限于本机进程能操作中枢。这一点写进 README。
 
 ## 5. 对第一期的修改
 
 - 第一期 §5.4（点名模型）整节由本文 §4.4 取代：不再有 API 密钥。
-- 第一期 §7 的 `config.json`：保存 `triageAgent`、`chatMcp`、DSH 的模型设置；不含令牌和任何密钥。
+- 第一期 §7 的 `config.json`：保存 `triageAgent`、DSH 的模型设置；不含令牌和任何密钥。
 - `Conversation.kind` 增加 `ask`。
 - `HubEvent` 不变；`ask` 会话的消息照常以 `message` 事件推送。
 
