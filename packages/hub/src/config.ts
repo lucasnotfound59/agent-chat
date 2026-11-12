@@ -1,14 +1,9 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export interface TriageConfig {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-}
-
 export interface AppConfig {
-  triage: TriageConfig | null;
+  /** Adapter name, 'off', or null for automatic. */
+  triageAgent: string | null;
   dsh: { provider: string; model: string } | null;
 }
 
@@ -25,10 +20,10 @@ export class ConfigStore {
       const raw = JSON.parse(readFileSync(this.file, 'utf8'));
       const legacy = 'token' in raw;
       if (typeof raw.token === 'string' && raw.token !== '') this.legacyToken = raw.token;
-      this.config = { triage: legacy ? null : (raw.triage ?? null), dsh: raw.dsh ?? null };
+      this.config = { triageAgent: typeof raw.triageAgent === 'string' ? raw.triageAgent : null, dsh: raw.dsh ?? null };
       if (legacy) this.save();
     } else {
-      this.config = { triage: null, dsh: null };
+      this.config = { triageAgent: null, dsh: null };
       this.save();
     }
   }
@@ -51,7 +46,7 @@ export class ConfigStore {
   }
 
   private save(): void {
-    writeFileSync(this.file, JSON.stringify({ ...this.config, triage: this.config.triage ?? undefined }, null, 2), { mode: 0o600 });
+    writeFileSync(this.file, JSON.stringify(this.config, null, 2), { mode: 0o600 });
     chmodSync(this.file, 0o600);
   }
 }

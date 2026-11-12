@@ -10,7 +10,7 @@ describe('ConfigStore', () => {
     const c1 = new ConfigStore(dir);
     expect('token' in c1.get()).toBe(false);
     expect(c1.takeLegacyToken()).toBeNull();
-    expect(c1.get().triage).toBeNull();
+    expect(c1.get().triageAgent).toBeNull();
     expect(c1.get().dsh).toBeNull();
     expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))).not.toHaveProperty('token');
     expect(statSync(join(dir, 'config.json')).mode & 0o777).toBe(0o600);
@@ -25,7 +25,7 @@ describe('ConfigStore', () => {
     const file = join(dir, 'config.json');
     writeFileSync(
       file,
-      JSON.stringify({ token: 'old-token', triage: { baseUrl: 'http://x/v1', apiKey: 'k', model: 'm' }, dsh: { provider: 'p', model: 'm' } }),
+      JSON.stringify({ token: 'old-token', triage: { baseUrl: 'http://x/v1', secret: 'k', model: 'm' }, dsh: { provider: 'p', model: 'm' } }),
       { mode: 0o644 },
     );
     const c = new ConfigStore(dir);

@@ -258,26 +258,27 @@ describe('settings, stop and config', () => {
     expect((await app.inject({ method: 'POST', url: '/api/resume', headers: auth })).json()).toEqual({ stopped: false });
   });
 
-  it('stores the triage key but never returns it', async () => {
+  it('stores the triage agent and dsh settings and returns no key fields', async () => {
     const put = await app.inject({
       method: 'PUT',
       url: '/api/config',
       headers: auth,
-      payload: { triage: { baseUrl: 'http://x/v1', apiKey: 'secret', model: 'm' }, dsh: { provider: 'my-provider', model: 'd' } },
+      payload: { triageAgent: 'fake-a', dsh: { provider: 'my-provider', model: 'd' } },
     });
-    expect(put.json()).toEqual({ triage: { baseUrl: 'http://x/v1', model: 'm', hasKey: true }, dsh: { provider: 'my-provider', model: 'd' } });
-    expect(JSON.stringify((await app.inject({ method: 'GET', url: '/api/config', headers: auth })).json())).not.toContain('secret');
-    expect(config.get().triage!.apiKey).toBe('secret');
+    expect(put.json()).toEqual({ triageAgent: 'fake-a', dsh: { provider: 'my-provider', model: 'd' } });
+    const got = (await app.inject({ method: 'GET', url: '/api/config', headers: auth })).json();
+    expect(got).toEqual({ triageAgent: 'fake-a', dsh: { provider: 'my-provider', model: 'd' } });
+    expect(config.get().triageAgent).toBe('fake-a');
   });
 
-  it('keeps the stored key only while baseUrl is unchanged', async () => {
-    const put = (triage: any) => app.inject({ method: 'PUT', url: '/api/config', headers: auth, payload: { triage } });
-    await put({ baseUrl: 'http://x/v1', apiKey: 'secret', model: 'm' });
-    expect((await put({ baseUrl: 'http://x/v1', apiKey: '', model: 'm2' })).json().triage.hasKey).toBe(true);
-    expect(config.get().triage!.apiKey).toBe('secret');
-    expect((await put({ baseUrl: 'http://x/v1', apiKey: 5, model: 'm2' })).json().triage.hasKey).toBe(true);
-    expect((await put({ baseUrl: 'http://other/v1', apiKey: '', model: 'm2' })).json().triage.hasKey).toBe(false);
-    expect(config.get().triage!.apiKey).toBe('');
+  it('accepts off and null for triageAgent and ignores unknown values', async () => {
+    const put = (triageAgent: any) => app.inject({ method: 'PUT', url: '/api/config', headers: auth, payload: { triageAgent } });
+    expect((await put('off')).json().triageAgent).toBe('off');
+    expect((await put('nope')).json().triageAgent).toBe('off');
+    expect((await put(5)).json().triageAgent).toBe('off');
+    expect((await put(null)).json().triageAgent).toBeNull();
+    expect((await put('fake-b')).json().triageAgent).toBe('fake-b');
+    expect((await put('nope')).json().triageAgent).toBe('fake-b');
   });
 
   it('updates a member bio', async () => {

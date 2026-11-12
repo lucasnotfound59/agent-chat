@@ -1,4 +1,4 @@
-import type { TriageConfig } from './config';
+import type { AgentAdapter } from '@agent-chat/adapters';
 
 export interface TriageInput {
   transcript: { sender: string; body: string }[];
@@ -29,36 +29,53 @@ export function parseSpeakers(content: string, candidates: TriageInput['candidat
   return ids;
 }
 
-export class OpenAITriage implements Triage {
+export const TRIAGE_ORDER = ['dsh', 'opencode', 'codex', 'claude'] as const;
+
+export function pickTriageAdapter(
+  setting: string | null,
+  adapters: Map<string, AgentAdapter>,
+  isAvailable: (name: string) => boolean,
+): AgentAdapter | null {
+  if (setting === 'off') return null;
+  if (setting !== null) {
+    const a = adapters.get(setting);
+    return a && isAvailable(a.name) ? a : null;
+  }
+  for (const name of TRIAGE_ORDER) {
+    const a = adapters.get(name);
+    if (a && isAvailable(name)) return a;
+  }
+  return null;
+}
+
+export class AgentTriage implements Triage {
   constructor(
-    private readonly cfg: TriageConfig,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly adapter: AgentAdapter,
+    private readonly workdir: string,
+    private readonly timeoutMs: number = 60000,
   ) {}
 
   async pick(input: TriageInput): Promise<string[]> {
-    const user = [
+    const prompt = [
+      SYSTEM,
+      '',
       'Agents who could speak:',
       ...input.candidates.map((c) => `- ${c.name}: ${c.bio}`),
       '',
       'Recent messages:',
       ...input.transcript.map((m) => `${m.sender}: ${m.body}`),
+      '',
+      'Output only the JSON object {"speakers": [...]} and nothing else.',
     ].join('\n');
-    const res = await this.fetchImpl(`${this.cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.cfg.apiKey}` },
-      body: JSON.stringify({
-        model: this.cfg.model,
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: SYSTEM },
-          { role: 'user', content: user },
-        ],
-      }),
-      signal: AbortSignal.timeout(20000),
+    const text = await this.adapter.complete({
+      prompt,
+      workdir: this.workdir,
+      signal: new AbortController().signal,
+      timeoutMs: this.timeoutMs,
     });
-    if (!res.ok) throw new Error(`triage request failed with HTTP ${res.status}`);
-    const data = (await res.json()) as any;
-    return parseSpeakers(data?.choices?.[0]?.message?.content ?? '', input.candidates);
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start < 0 || end < start) throw new Error('triage reply contains no JSON object');
+    return parseSpeakers(text.slice(start, end + 1), input.candidates);
   }
 }

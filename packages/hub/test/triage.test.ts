@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { FakeAdapter } from '@agent-chat/adapters';
+import type { AgentAdapter } from '@agent-chat/adapters';
+import { setup } from './helpers';
 import { parseMentions } from '../src/mentions';
-import { OpenAITriage, parseSpeakers } from '../src/triage';
+import { AgentTriage, TRIAGE_ORDER, parseSpeakers, pickTriageAdapter } from '../src/triage';
 import type { Member } from '../src/types';
 
 const members: Member[] = [
@@ -34,29 +37,82 @@ describe('parseSpeakers', () => {
   });
 });
 
-describe('OpenAITriage', () => {
-  const cfg = { baseUrl: 'http://llm.test/v1/', apiKey: 'secret', model: 'small' };
-  const input = { transcript: [{ sender: '我', body: '谁懂 Rust？' }], candidates };
+describe('pickTriageAdapter', () => {
+  const names = ['claude', 'codex', 'opencode', 'dsh'];
+  const adapters = new Map<string, AgentAdapter>(names.map((n) => [n, new FakeAdapter(n, n)]));
+  const all = () => true;
 
-  it('posts a chat completion and returns the picked ids', async () => {
-    let seen: { url: string; init: RequestInit } | null = null;
-    const fakeFetch = (async (url: string, init: RequestInit) => {
-      seen = { url, init };
-      return new Response(JSON.stringify({ choices: [{ message: { content: '{"speakers":["Codex"]}' } }] }));
-    }) as unknown as typeof fetch;
-
-    expect(await new OpenAITriage(cfg, fakeFetch).pick(input)).toEqual(['b']);
-    expect(seen!.url).toBe('http://llm.test/v1/chat/completions');
-    expect((seen!.init.headers as Record<string, string>).authorization).toBe('Bearer secret');
-    const body = JSON.parse(seen!.init.body as string);
-    expect(body.model).toBe('small');
-    expect(body.response_format).toEqual({ type: 'json_object' });
-    expect(body.messages[1].content).toContain('谁懂 Rust？');
-    expect(body.messages[1].content).toContain('Claude Code: x');
+  it('has the documented automatic order', () => {
+    expect([...TRIAGE_ORDER]).toEqual(['dsh', 'opencode', 'codex', 'claude']);
   });
+  it('returns null when switched off', () => {
+    expect(pickTriageAdapter('off', adapters, all)).toBeNull();
+  });
+  it('returns the chosen adapter when it is available', () => {
+    expect(pickTriageAdapter('codex', adapters, all)?.name).toBe('codex');
+  });
+  it('returns null when the chosen adapter is unavailable or unknown', () => {
+    expect(pickTriageAdapter('codex', adapters, (n) => n !== 'codex')).toBeNull();
+    expect(pickTriageAdapter('nope', adapters, all)).toBeNull();
+  });
+  it('picks the first available in order when automatic', () => {
+    expect(pickTriageAdapter(null, adapters, all)?.name).toBe('dsh');
+    expect(pickTriageAdapter(null, adapters, (n) => n === 'codex' || n === 'claude')?.name).toBe('codex');
+  });
+  it('returns null when nothing is available', () => {
+    expect(pickTriageAdapter(null, adapters, () => false)).toBeNull();
+    expect(pickTriageAdapter(null, new Map(), all)).toBeNull();
+  });
+});
 
-  it('throws on a non-2xx response', async () => {
-    const fakeFetch = (async () => new Response('no', { status: 500 })) as unknown as typeof fetch;
-    await expect(new OpenAITriage(cfg, fakeFetch).pick(input)).rejects.toThrow(/500/);
+describe('AgentTriage', () => {
+  const input = { transcript: [{ sender: '我', body: '谁懂 Rust？' }], candidates };
+  const make = (reply: string | Error) => {
+    const fake = new FakeAdapter('fake-t', 'T');
+    fake.completeHandler = async () => {
+      if (reply instanceof Error) throw reply;
+      return reply;
+    };
+    return { fake, triage: new AgentTriage(fake, '/tmp/triage-workdir') };
+  };
+
+  it('asks the adapter with candidates and transcript and parses fenced JSON', async () => {
+    const { fake, triage } = make('好的：\n```json\n{"speakers":["Codex"]}\n```');
+    expect(await triage.pick(input)).toEqual(['b']);
+    const req = fake.completeCalls[0];
+    expect(req.workdir).toBe('/tmp/triage-workdir');
+    expect(req.timeoutMs).toBe(60000);
+    expect(req.signal).toBeInstanceOf(AbortSignal);
+    expect(req.prompt).toContain('Claude Code: x');
+    expect(req.prompt).toContain('Codex: y');
+    expect(req.prompt).toContain('我: 谁懂 Rust？');
+    expect(req.prompt).toContain('{"speakers"');
+  });
+  it('uses a custom timeout', async () => {
+    const fake = new FakeAdapter('fake-t', 'T');
+    await new AgentTriage(fake, '/w', 1234).pick(input);
+    expect(fake.completeCalls[0].timeoutMs).toBe(1234);
+  });
+  it('throws when the reply has no JSON object', async () => {
+    await expect(make('没有人需要回答').triage.pick(input)).rejects.toThrow();
+  });
+  it('propagates errors from complete()', async () => {
+    await expect(make(new Error('boom')).triage.pick(input)).rejects.toThrow('boom');
+  });
+});
+
+describe('scheduler with AgentTriage', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('wakes the agent the triage adapter picks when nobody is mentioned', async () => {
+    const tf = new FakeAdapter('fake-t', 'T');
+    tf.completeHandler = async () => (tf.completeCalls.length === 1 ? '{"speakers":["A"]}' : '{"speakers":[]}');
+    const t = setup({ triage: new AgentTriage(tf, '/w') });
+    t.say(t.group.id, '大家怎么看');
+    await t.settle();
+    expect(tf.completeCalls.length).toBeGreaterThanOrEqual(1);
+    expect(t.fa.calls).toHaveLength(1);
+    expect(t.fb.calls).toHaveLength(0);
   });
 });

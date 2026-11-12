@@ -5,7 +5,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
 import type { Availability } from '@agent-chat/adapters';
-import type { ConfigStore, TriageConfig } from './config';
+import type { ConfigStore } from './config';
 import { parseMentions } from './mentions';
 import type { Scheduler } from './scheduler';
 import type { Store } from './store';
@@ -75,7 +75,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const publicConfig = () => {
     const c = config.get();
     return {
-      triage: c.triage ? { baseUrl: c.triage.baseUrl, model: c.triage.model, hasKey: Boolean(c.triage.apiKey) } : null,
+      triageAgent: c.triageAgent,
       dsh: c.dsh,
     };
   };
@@ -246,18 +246,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   app.get('/api/config', async () => publicConfig());
 
-  app.put<{ Body: { triage?: TriageConfig | null; dsh?: { provider: string; model: string } | null } }>(
+  app.put<{ Body: { triageAgent?: string | null; dsh?: { provider: string; model: string } | null } }>(
     '/api/config',
     async (req) => {
       const patch: Parameters<ConfigStore['update']>[0] = {};
       const b = req.body ?? {};
-      if (b.triage === null) patch.triage = null;
-      else if (b.triage && typeof b.triage.baseUrl === 'string' && typeof b.triage.model === 'string') {
-        // An empty key keeps the stored one only while the baseUrl is unchanged, so the key is never sent elsewhere.
-        const stored = config.get().triage;
-        const given = typeof b.triage.apiKey === 'string' ? b.triage.apiKey : '';
-        const apiKey = given || (stored && stored.baseUrl === b.triage.baseUrl ? stored.apiKey : '');
-        patch.triage = { baseUrl: b.triage.baseUrl, model: b.triage.model, apiKey };
+      if (b.triageAgent === null || b.triageAgent === 'off' || (typeof b.triageAgent === 'string' && availability.has(b.triageAgent))) {
+        patch.triageAgent = b.triageAgent;
       }
       if (b.dsh === null) patch.dsh = null;
       else if (b.dsh && typeof b.dsh.provider === 'string' && typeof b.dsh.model === 'string') {
