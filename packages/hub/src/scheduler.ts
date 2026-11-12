@@ -32,9 +32,22 @@ interface ConvState {
 
 type Session = { harnessSessionId: string; lastSeenSeq: number };
 
+export type AskInvokeResult =
+  | { kind: 'reply'; body: string }
+  | { kind: 'silent' }
+  | { kind: 'timeout' | 'error' | 'aborted' | 'capped' | 'stopped'; message: string };
+
+type Execution =
+  | { kind: 'reply'; body: string }
+  | { kind: 'silent' }
+  | { kind: 'timeout' | 'error' | 'aborted'; message: string };
+
 export class Scheduler {
   private readonly states = new Map<string, ConvState>();
   private stopped = false;
+  /** Per-conversation queue of ask invocations; each link never rejects. */
+  private readonly askChains = new Map<string, Promise<unknown>>();
+  private readonly askAborts = new Set<AbortController>();
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -44,6 +57,7 @@ export class Scheduler {
 
   onMessage(msg: Message): void {
     if (msg.kind !== 'normal') return;
+    if (this.deps.store.getConversation(msg.conversationId)?.kind === 'ask') return;
     const st = this.state(msg.conversationId, msg.seq - 1);
     const sender = msg.senderId ? this.deps.store.getMember(msg.senderId) : null;
     if (sender?.kind === 'human') st.agentRounds = 0;
@@ -52,6 +66,7 @@ export class Scheduler {
   }
 
   kick(conversationId: string): void {
+    if (this.deps.store.getConversation(conversationId)?.kind === 'ask') return;
     const st = this.state(conversationId);
     if (!st.running) this.schedule(conversationId);
   }
@@ -67,13 +82,14 @@ export class Scheduler {
   stopAll(): void {
     this.stopped = true;
     for (const id of this.states.keys()) this.abortConversation(id);
+    for (const c of this.askAborts) c.abort();
     this.deps.emit({ type: 'stopped', stopped: true });
   }
 
   resumeAll(): void {
     this.stopped = false;
     this.deps.emit({ type: 'stopped', stopped: false });
-    for (const c of this.deps.store.listConversations()) this.kick(c.id);
+    for (const c of this.deps.store.listConversations()) if (c.kind !== 'ask') this.kick(c.id);
   }
 
   async retryInvocation(invocationId: string): Promise<boolean> {
@@ -81,7 +97,7 @@ export class Scheduler {
     if (!inv || this.stopped) return false;
     const conv = this.deps.store.getConversation(inv.conversationId);
     const agent = this.deps.store.getMember(inv.memberId);
-    if (!conv || !agent || conv.settings.paused) return false;
+    if (!conv || !agent || conv.kind === 'ask' || conv.settings.paused) return false;
     const st = this.state(conv.id);
     if (st.running) return false;
     st.running = true;
@@ -135,7 +151,7 @@ export class Scheduler {
     const st = this.state(conversationId);
     if (st.running || this.stopped) return;
     const conv = store.getConversation(conversationId);
-    if (!conv || conv.settings.paused) return;
+    if (!conv || conv.kind === 'ask' || conv.settings.paused) return;
     const pending = store.listMessagesAfter(conversationId, st.lastProcessedSeq);
     const triggers = pending.filter((m) => m.kind === 'normal');
     if (pending.length > 0) st.lastProcessedSeq = pending[pending.length - 1].seq;
@@ -217,11 +233,19 @@ export class Scheduler {
     return false;
   }
 
-  /** Returns false when the invocation was aborted and the round should stop. */
-  private async invokeAgent(conv: Conversation, agent: Member, reason: string, signal: AbortSignal): Promise<boolean> {
+  /**
+   * Runs one agent invocation: invocation row, typing events, harness session, reply and
+   * timeout/error system messages. Always finishes the row and the typing event.
+   */
+  private async execute(
+    conv: Conversation,
+    agent: Member,
+    adapter: AgentAdapter,
+    reason: string,
+    signal: AbortSignal,
+    retryable: boolean,
+  ): Promise<Execution> {
     const { store, emit } = this.deps;
-    const adapter = agent.adapter ? this.deps.adapters.get(agent.adapter) : undefined;
-    if (!adapter) return true;
     const invocationId = store.startInvocation(conv.id, agent.id, reason);
     try {
       emit({ type: 'typing', conversationId: conv.id, memberId: agent.id, active: true });
@@ -237,24 +261,25 @@ export class Scheduler {
         });
         emit({ type: 'message', message });
         store.finishInvocation(invocationId, 'replied');
-      } else {
-        store.finishInvocation(invocationId, 'silent');
+        return { kind: 'reply', body: result.body };
       }
-      return true;
+      store.finishInvocation(invocationId, 'silent');
+      return { kind: 'silent' };
     } catch (e) {
       const code = e instanceof AdapterError ? e.code : 'crashed';
+      const meta = retryable ? { invocationId, retryable: true } : { invocationId };
       if (code === 'aborted') {
         store.finishInvocation(invocationId, 'interrupted');
-        return false;
+        return { kind: 'aborted', message: '已中止' };
       }
       if (code === 'timeout') {
         store.finishInvocation(invocationId, 'timeout');
-        this.system(conv.id, `${agent.name} 没有回应（超时）。`, { invocationId, retryable: true });
-        return true;
+        this.system(conv.id, `${agent.name} 没有回应（超时）。`, meta);
+        return { kind: 'timeout', message: `${agent.name} 没有回应（超时）` };
       }
       store.finishInvocation(invocationId, 'error');
-      this.system(conv.id, `${agent.name} 出错：${(e as Error).message}`, { invocationId, retryable: true });
-      return true;
+      this.system(conv.id, `${agent.name} 出错：${(e as Error).message}`, meta);
+      return { kind: 'error', message: `${agent.name} 出错：${(e as Error).message}` };
     } finally {
       try {
         emit({ type: 'typing', conversationId: conv.id, memberId: agent.id, active: false });
@@ -262,6 +287,51 @@ export class Scheduler {
         console.error('[scheduler] typing emit failed', err);
       }
     }
+  }
+
+  /** Returns false when the invocation was aborted and the round should stop. */
+  private async invokeAgent(conv: Conversation, agent: Member, reason: string, signal: AbortSignal): Promise<boolean> {
+    const adapter = agent.adapter ? this.deps.adapters.get(agent.adapter) : undefined;
+    if (!adapter) return true;
+    const r = await this.execute(conv, agent, adapter, reason, signal, true);
+    return r.kind !== 'aborted';
+  }
+
+  /**
+   * Invokes the answering agent of an `ask` conversation. Calls for the same conversation run one
+   * after another; no round state is touched and the scheduler never reacts to the stored messages.
+   */
+  invokeForAsk(conversationId: string, agentMemberId: string, signal: AbortSignal): Promise<AskInvokeResult> {
+    const ctl = new AbortController();
+    this.askAborts.add(ctl);
+    const combined = AbortSignal.any([signal, ctl.signal]);
+    const run = async (): Promise<AskInvokeResult> => {
+      try {
+        if (combined.aborted) return { kind: 'aborted', message: '提问已中止' };
+        if (this.stopped) return { kind: 'stopped', message: '已全局停止' };
+        const { store } = this.deps;
+        const conv = store.getConversation(conversationId);
+        const agent = store.getMember(agentMemberId);
+        const adapter = agent?.adapter ? this.deps.adapters.get(agent.adapter) : undefined;
+        if (!conv || conv.kind !== 'ask' || !agent || !adapter) return { kind: 'error', message: '无法唤起对方' };
+        if (!this.underDailyCap(conv, this.state(conversationId))) {
+          return { kind: 'capped', message: `今日唤起次数已达上限（${conv.settings.dailyInvocationCap}）` };
+        }
+        return await this.execute(conv, agent, adapter, 'ask', combined, false);
+      } catch (e) {
+        console.error('[scheduler] ask invocation failed', e);
+        return { kind: 'error', message: (e as Error).message };
+      } finally {
+        this.askAborts.delete(ctl);
+      }
+    };
+    const prev = this.askChains.get(conversationId) ?? Promise.resolve();
+    const next = prev.then(run);
+    const tail = next.finally(() => {
+      if (this.askChains.get(conversationId) === tail) this.askChains.delete(conversationId);
+    });
+    this.askChains.set(conversationId, tail);
+    return next;
   }
 
   private async callAdapter(

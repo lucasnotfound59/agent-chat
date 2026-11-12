@@ -5,6 +5,8 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
 import type { Availability } from '@agent-chat/adapters';
+import { AskError } from './ask';
+import type { AskErrorCode, AskService } from './ask';
 import type { ConfigStore } from './config';
 import { parseMentions } from './mentions';
 import type { Scheduler } from './scheduler';
@@ -35,7 +37,18 @@ export interface ServerDeps {
   token: () => string;
   bus: Bus;
   availability: Map<string, Availability>;
+  ask: AskService;
 }
+
+const ASK_STATUS: Record<AskErrorCode, number> = {
+  bad_request: 400,
+  unavailable: 409,
+  stopped: 503,
+  capped: 429,
+  timeout: 504,
+  failed: 502,
+  aborted: 499,
+};
 
 const UPLOAD_FILE = /^([^/\\]+)\/[0-9a-f-]{36}-[^/\\]+$/;
 const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
@@ -67,7 +80,7 @@ function cleanSettings(input: Record<string, unknown>): Partial<Settings> {
 }
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
-  const { store, scheduler, config, bus, availability } = deps;
+  const { store, scheduler, config, bus, availability, ask } = deps;
   const app = Fastify({ bodyLimit: 50 * 1024 * 1024 });
   const attachmentsRoot = join(config.dataDir, 'attachments');
   const me = () => store.listMembers().find((m) => m.kind === 'human')!;
@@ -175,6 +188,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     async (req, reply) => {
       const conv = store.getConversation(req.params.id);
       if (!conv) return reply.code(404).send({ error: 'unknown conversation' });
+      if (conv.kind === 'ask') return reply.code(400).send({ error: '提问会话暂不支持手动发言' });
       const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
       const attachments = (Array.isArray(req.body?.attachments) ? req.body.attachments : []).filter(
         (a) => typeof a?.name === 'string' && typeof a?.file === 'string' && validAttachment(conv.id, a.file),
@@ -223,6 +237,45 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (typeof req.body?.bio !== 'string') return reply.code(400).send({ error: 'bio is required' });
     store.updateMemberBio(req.params.id, req.body.bio);
     return store.getMember(req.params.id);
+  });
+
+  app.get('/api/members', async () =>
+    store.listMembers().map((m) => {
+      const a = m.adapter ? (availability.get(m.adapter) ?? { ok: false, reason: '尚未检查' }) : null;
+      return {
+        name: m.name,
+        adapter: m.adapter,
+        kind: m.kind,
+        bio: m.bio,
+        available: a ? a.ok : true,
+        reason: a && !a.ok ? (a.reason ?? '') : null,
+      };
+    }),
+  );
+
+  app.post<{ Body: { as?: string; to?: string; question?: string } }>('/api/ask', async (req, reply) => {
+    const ctl = new AbortController();
+    let finished = false;
+    // Abort only if the connection closes before the response was sent. `req.raw` emits 'close'
+    // as soon as the request body is read (Node >= 16), so the response's 'close' is the signal.
+    reply.raw.on('close', () => {
+      if (!finished && !reply.raw.writableFinished) ctl.abort();
+    });
+    try {
+      const b = req.body ?? {};
+      const out = await ask.ask({
+        as: b.as as string,
+        to: b.to as string,
+        question: b.question as string,
+        signal: ctl.signal,
+      });
+      return out;
+    } catch (e) {
+      const err = e instanceof AskError ? e : new AskError('failed', (e as Error).message);
+      return reply.code(ASK_STATUS[err.code]).send({ error: err.message, code: err.code });
+    } finally {
+      finished = true;
+    }
   });
 
   app.post('/api/stop', async () => {

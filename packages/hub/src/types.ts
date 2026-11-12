@@ -26,7 +26,7 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export interface Conversation {
   id: string;
-  kind: 'dm' | 'group';
+  kind: 'dm' | 'group' | 'ask';
   title: string;
   settings: Settings;
   memberIds: string[];

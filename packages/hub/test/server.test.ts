@@ -12,6 +12,9 @@ import { MemoryTokenStore, ensureToken } from '../src/tokenStore';
 import { Scheduler } from '../src/scheduler';
 import { Bus, buildServer } from '../src/server';
 import { Store } from '../src/store';
+import { AskService } from '../src/ask';
+import { AdapterError } from '@agent-chat/adapters';
+import http from 'node:http';
 
 let app: FastifyInstance;
 let bus: Bus;
@@ -60,7 +63,14 @@ beforeEach(() => {
     dataDir,
     isAvailable: (n) => availability.get(n)?.ok ?? false,
   });
-  app = buildServer({ store, scheduler, config, token: () => tokenStore.get()!, bus, availability });
+  const ask = new AskService({
+    store,
+    scheduler,
+    isAvailable: (n) => availability.get(n)?.ok ?? false,
+    availabilityReason: (n) => availability.get(n)?.reason,
+    emit: (e) => bus.emit(e),
+  });
+  app = buildServer({ store, scheduler, config, token: () => tokenStore.get()!, bus, availability, ask });
   auth = { authorization: `Bearer ${token}` };
 });
 
@@ -360,5 +370,105 @@ describe('websocket', () => {
     await new Promise((r) => bad.on('open', r));
     bad.send(JSON.stringify({ type: 'auth', token: 'wrong' }));
     await new Promise((r) => bad.on('close', r));
+  });
+});
+
+describe('ask routes', () => {
+  const post = (body: unknown, headers: Record<string, string> = auth) =>
+    app.inject({ method: 'POST', url: '/api/ask', headers, payload: body as any });
+  // fake-b is unavailable in this fixture, so B asks A.
+  const good = { as: 'fake-b', to: 'A', question: '在吗' };
+
+  it('answers with 200 and the conversation id', async () => {
+    const r = await post(good);
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toMatchObject({ reply: 'reply from A' });
+    expect(store.getConversation(r.json().conversationId)?.kind).toBe('ask');
+  });
+
+  it('requires the token', async () => {
+    expect((await post(good, {})).statusCode).toBe(401);
+  });
+
+  it('maps error codes to HTTP statuses', async () => {
+    const cases: Array<[() => Promise<any>, number, string]> = [
+      [() => post({ ...good, question: ' ' }), 400, 'bad_request'],
+      [() => post({ ...good, as: 'fake-a', to: 'B' }), 409, 'unavailable'],
+    ];
+    for (const [run, status, code] of cases) {
+      const r = await run();
+      expect(r.statusCode).toBe(status);
+      expect(r.json()).toMatchObject({ code, error: expect.any(String) });
+    }
+    fa.handler = async () => {
+      throw new AdapterError('timeout', 'slow');
+    };
+    expect((await post(good)).statusCode).toBe(504);
+    fa.handler = async () => {
+      throw new AdapterError('crashed', 'boom');
+    };
+    expect((await post(good)).statusCode).toBe(502);
+    expect((await app.inject({ method: 'POST', url: '/api/stop', headers: auth })).statusCode).toBe(200);
+    const stopped = await post(good);
+    expect(stopped.statusCode).toBe(503);
+    expect(stopped.json().code).toBe('stopped');
+    await app.inject({ method: 'POST', url: '/api/resume', headers: auth });
+    const conv = store.listConversations().find((c) => c.kind === 'ask')!;
+    store.updateSettings(conv.id, { dailyInvocationCap: 0 });
+    expect((await post(good)).statusCode).toBe(429);
+  });
+
+  it('lists members with availability', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/members', headers: auth });
+    expect(r.json()).toEqual([
+      { name: '我', adapter: null, kind: 'human', bio: '', available: true, reason: null },
+      { name: 'A', adapter: 'fake-a', kind: 'agent', bio: fa.defaultBio, available: true, reason: null },
+      { name: 'B', adapter: 'fake-b', kind: 'agent', bio: fb.defaultBio, available: false, reason: '未登录' },
+    ]);
+  });
+
+  it('rejects human messages into an ask conversation', async () => {
+    const id = (await post(good)).json().conversationId;
+    const r = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${id}/messages`,
+      headers: auth,
+      payload: { body: 'hello' },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(store.listMessages(id).some((m) => m.body === 'hello')).toBe(false);
+  });
+
+  it('aborts the invocation when the client disconnects, but not after a normal response', async () => {
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const port = (app.server.address() as AddressInfo).port;
+    const send = (onReq?: (r: http.ClientRequest) => void) =>
+      new Promise<number>((resolve, reject) => {
+        const body = JSON.stringify(good);
+        const r = http.request(
+          { host: '127.0.0.1', port, path: '/api/ask', method: 'POST', headers: { ...auth, 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve(res.statusCode ?? 0));
+          },
+        );
+        r.on('error', () => resolve(0));
+        r.end(body);
+        onReq?.(r);
+      });
+
+    // Normal completion leaves the signal alone.
+    expect(await send()).toBe(200);
+    await wait(30);
+    expect(fa.calls[0].signal.aborted).toBe(false);
+
+    fa.handler = (req) =>
+      new Promise((_, reject) => req.signal.addEventListener('abort', () => reject(new AdapterError('aborted', 'x'))));
+    const pending = send((r) => setTimeout(() => r.destroy(), 60));
+    await until(() => fa.calls.length === 2);
+    await pending;
+    await until(() => fa.calls[1].signal.aborted);
+    const conv = store.listConversations().find((c) => c.kind === 'ask')!;
+    expect(store.countInvocationsSince(conv.id, 0)).toBe(2);
   });
 });

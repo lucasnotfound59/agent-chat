@@ -11,6 +11,7 @@ import {
   liveProcessCount,
 } from '@agent-chat/adapters';
 import type { AgentAdapter, Availability } from '@agent-chat/adapters';
+import { AskService } from './ask';
 import { seed } from './bootstrap';
 import { ConfigStore } from './config';
 import { Scheduler } from './scheduler';
@@ -74,7 +75,14 @@ const scheduler = new Scheduler({
   isAvailable: (name) => availability.get(name)?.ok ?? false,
 });
 
-const app = buildServer({ store, scheduler, config, token: () => token, bus, availability });
+const ask = new AskService({
+  store,
+  scheduler,
+  isAvailable: (n) => availability.get(n)?.ok ?? false,
+  availabilityReason: (n) => availability.get(n)?.reason ?? '尚未检查',
+  emit: (e) => bus.emit(e),
+});
+const app = buildServer({ store, scheduler, config, token: () => token, bus, availability, ask });
 
 await refreshAvailability();
 setInterval(() => void refreshAvailability(), 60000).unref();

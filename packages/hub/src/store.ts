@@ -49,6 +49,11 @@ export class Store {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec(SCHEMA);
+    // Phase 1 databases lack the ask columns.
+    const cols = this.db.prepare('PRAGMA table_info(conversations)').all().map((c: Row) => c.name as string);
+    for (const col of ['ask_from', 'ask_to']) {
+      if (!cols.includes(col)) this.db.exec(`ALTER TABLE conversations ADD COLUMN ${col} TEXT`);
+    }
   }
 
   createMember(input: { kind: MemberKind; name: string; bio?: string; adapter?: string | null }): Member {
@@ -79,10 +84,12 @@ export class Store {
   }
 
   createConversation(input: {
-    kind: 'dm' | 'group';
+    kind: 'dm' | 'group' | 'ask';
     title: string;
     memberIds: string[];
     settings?: Partial<Settings>;
+    askFrom?: string;
+    askTo?: string;
   }): Conversation {
     const c: Conversation = {
       id: randomUUID(),
@@ -93,8 +100,10 @@ export class Store {
       createdAt: Date.now(),
     };
     this.db
-      .prepare('INSERT INTO conversations (id, kind, title, settings, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(c.id, c.kind, c.title, JSON.stringify(c.settings), c.createdAt);
+      .prepare(
+        'INSERT INTO conversations (id, kind, title, settings, created_at, ask_from, ask_to) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(c.id, c.kind, c.title, JSON.stringify(c.settings), c.createdAt, input.askFrom ?? null, input.askTo ?? null);
     const add = this.db.prepare('INSERT INTO conversation_members (conversation_id, member_id) VALUES (?, ?)');
     for (const id of c.memberIds) add.run(c.id, id);
     return c;
@@ -124,6 +133,13 @@ export class Store {
 
   getConversation(id: string): Conversation | null {
     const r = this.db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
+    return r ? this.toConversation(r) : null;
+  }
+
+  findAskConversation(askerId: string, targetId: string): Conversation | null {
+    const r = this.db
+      .prepare("SELECT * FROM conversations WHERE kind = 'ask' AND ask_from = ? AND ask_to = ? ORDER BY rowid LIMIT 1")
+      .get(askerId, targetId);
     return r ? this.toConversation(r) : null;
   }
 
