@@ -25,7 +25,9 @@ const port = Number(process.env.AGENTCHAT_PORT ?? 4317);
 mkdirSync(dataDir, { recursive: true });
 const config = new ConfigStore(dataDir);
 const tokenStore = new KeychainTokenStore();
-const token = ensureToken(tokenStore, config.takeLegacyToken());
+const legacyToken = config.takeLegacyToken();
+const token = ensureToken(tokenStore, legacyToken);
+config.commitLegacyMigration();
 const store = new Store(join(dataDir, 'agentchat.db'));
 const bus = new Bus();
 

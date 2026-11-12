@@ -12,8 +12,23 @@ describe('KeychainTokenStore', () => {
     expect(calls).toEqual([['find-generic-password', '-s', 'AgentChat', '-a', 'hub-token', '-w']]);
   });
 
-  it('get returns null on a non-zero exit', () => {
+  it('get returns null only when the item is not found (exit 44)', () => {
     expect(new KeychainTokenStore(() => ({ status: 44, stdout: '' })).get()).toBeNull();
+  });
+
+  it('get throws on any other failure, naming service, account and status', () => {
+    const s = new KeychainTokenStore(() => ({ status: 51, stdout: 'secret-ish' }));
+    expect(() => s.get()).toThrow(/AgentChat.*hub-token.*51/s);
+  });
+
+  it('ensureToken propagates a read failure and never overwrites the entry', () => {
+    let sets = 0;
+    const s = new KeychainTokenStore((args) => {
+      if (args[0] === 'add-generic-password') sets++;
+      return { status: 51, stdout: '' };
+    });
+    expect(() => ensureToken(s, 'legacy')).toThrow(/51/);
+    expect(sets).toBe(0);
   });
 
   it('set passes exact arguments', () => {
