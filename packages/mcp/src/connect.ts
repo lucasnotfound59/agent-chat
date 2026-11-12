@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { accessSync, chmodSync, constants, copyFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -23,6 +23,8 @@ export interface PlanOptions {
   exec?: Exec;
   /** Directory holding Codex's config.toml (CODEX_HOME); defaults to <home>/.codex. */
   codexHome?: string;
+  /** Directory holding OpenCode's global config (XDG_CONFIG_HOME/opencode); defaults to <home>/.config/opencode. */
+  opencodeConfigDir?: string;
 }
 
 const NAME = 'agent-chat';
@@ -52,6 +54,73 @@ function serverCommand(o: PlanOptions, target: Target): string[] {
   return [o.nodePath, '--import', loader, join(o.repoRoot, 'packages/mcp/src/main.ts'), '--as', target];
 }
 
+const OPENCODE_TIMEOUT_MS = TOOL_TIMEOUT_SEC * 1000;
+const opencodeConfig = (o: PlanOptions) => {
+  const dir = o.opencodeConfigDir ?? join(o.home, '.config', 'opencode');
+  for (const n of ['opencode.json', 'opencode.jsonc']) if (existsSync(join(dir, n))) return join(dir, n);
+  return join(dir, 'opencode.json');
+};
+
+/** The entry OpenCode reads from mcp.<name> (verified with the installed OpenCode; timeout is in ms). */
+function openCodeEntry(cmd: string[]): Record<string, unknown> {
+  return { type: 'local', command: cmd, enabled: true, timeout: OPENCODE_TIMEOUT_MS };
+}
+
+type Json = Record<string, unknown>;
+const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+function handEdit(file: string, why: string, entry?: Record<string, unknown>): Error {
+  return new Error(
+    `${file} ${why}; it was not changed. Edit it by hand: ` +
+      (entry
+        ? `under the top-level "mcp" object add\n    "${NAME}": ${JSON.stringify(entry)}`
+        : `remove the "${NAME}" entry under "mcp" (and under "mcp.servers" if present)`),
+  );
+}
+
+/** Adds (or removes) mcp["agent-chat"] in OpenCode's global config; returns a note when nothing needed doing. */
+function editOpenCodeConfig(file: string, mode: 'add' | 'remove', entry?: Record<string, unknown>): void | string {
+  const exists = existsSync(file);
+  if (!exists && mode === 'remove') return `${file} does not exist; nothing to remove`;
+  const text = exists ? readFileSync(file, 'utf8') : '';
+  let root: unknown = {};
+  if (text.trim() !== '') {
+    try {
+      root = JSON.parse(text);
+    } catch (e) {
+      throw handEdit(file, `is not plain JSON (comments or trailing commas?): ${(e as Error).message}`, entry);
+    }
+  }
+  if (!isObj(root)) throw handEdit(file, 'does not hold a JSON object', entry);
+  if (root.mcp !== undefined && !isObj(root.mcp)) throw handEdit(file, 'has an "mcp" that is not an object', entry);
+  const before = JSON.stringify(root);
+  const mcp: Json = isObj(root.mcp) ? root.mcp : {};
+  if (isObj(mcp.servers) && NAME in mcp.servers) {
+    delete mcp.servers[NAME];
+    if (Object.keys(mcp.servers).length === 0) delete mcp.servers;
+  }
+  if (mode === 'add') {
+    mcp[NAME] = entry;
+    root.mcp = mcp;
+  } else delete mcp[NAME];
+  if (JSON.stringify(root) === before) return mode === 'add' ? `"${NAME}" is already registered in ${file}` : `"${NAME}" is not registered in ${file}; nothing to remove`;
+  const indent = text.match(/^([ \t]+)"/m)?.[1] ?? '  ';
+  const nl = text === '' || text.endsWith('\n') ? '\n' : '';
+  if (exists) backupOnce(file);
+  else mkdirSync(dirname(file), { recursive: true });
+  atomicWrite(file, JSON.stringify(root, null, indent) + nl);
+}
+
+/** Adds to a failed `add` the fact that the step before it removed the working registration. */
+function removedNote(e: unknown, removed: boolean, app: string, target: Target): Error {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (!removed) return e instanceof Error ? e : new Error(msg);
+  return new Error(
+    `${msg}\nThe previous "${NAME}" registration was removed by the step above and is now absent from ${app}. ` +
+      `Fix the cause and run \`npm run connect -- --apply ${target}\` again to register it.`,
+  );
+}
+
 const codexConfig = (o: PlanOptions) => join(o.codexHome ?? join(o.home, '.codex'), 'config.toml');
 const dshFile = (home: string, profile: string) => join(home, '.dsh/profiles', profile, 'cordis.patch.yml');
 
@@ -64,14 +133,18 @@ function backupOnce(file: string): void {
   }
 }
 
-/** Writes through a temp file in the same directory and renames it over `file`, keeping the file's mode. */
+/**
+ * Writes through a temp file in the same directory and renames it over `file`, keeping the file's mode.
+ * A symlink is followed: the temp file goes next to, and replaces, the link's target, so the link survives.
+ */
 function atomicWrite(file: string, content: string): void {
-  const tmp = join(dirname(file), `.${basename(file)}.agent-chat.${process.pid}.tmp`);
-  const mode = statSync(file).mode & 0o7777;
+  const target = existsSync(file) ? realpathSync(file) : file;
+  const tmp = join(dirname(target), `.${basename(target)}.agent-chat.${process.pid}.tmp`);
+  const mode = existsSync(target) ? statSync(target).mode & 0o7777 : 0o644;
   try {
     writeFileSync(tmp, content, { mode });
     chmodSync(tmp, mode);
-    renameSync(tmp, file);
+    renameSync(tmp, target);
   } catch (e) {
     rmSync(tmp, { force: true });
     throw e;
@@ -82,7 +155,7 @@ function commandStep(target: Target, description: string, file: string, args: st
   return { target, description, display: shellJoin([file, ...args]), run: async () => void (await exec(file, args)) };
 }
 /** A remove that may legitimately fail because there is nothing to remove. */
-function removeStep(target: Target, description: string, file: string, args: string[], exec: Exec): Step {
+function removeStep(target: Target, description: string, file: string, args: string[], exec: Exec, onRemoved?: () => void): Step {
   const s = commandStep(target, `${description}; a failure is ignored (the entry may not exist yet)`, file, args, exec);
   const run = s.run;
   return {
@@ -90,6 +163,7 @@ function removeStep(target: Target, description: string, file: string, args: str
     run: async () => {
       try {
         await run();
+        onRemoved?.();
       } catch {
         // nothing to remove
       }
@@ -105,6 +179,7 @@ export function planConnect(o: PlanOptions): Step[] {
     if (target === 'codex') {
       const file = codexConfig(o);
       let addFailed = false;
+      let removed = false;
       steps.push(
         {
           target,
@@ -114,7 +189,7 @@ export function planConnect(o: PlanOptions): Step[] {
             if (existsSync(file)) backupOnce(file);
           },
         },
-        removeStep('codex', `remove any old "${NAME}" from Codex first so connect can be re-run (codex edits ${file})`, 'codex', ['mcp', 'remove', NAME], exec),
+        removeStep('codex', `remove any old "${NAME}" from Codex first so connect can be re-run (codex edits ${file})`, 'codex', ['mcp', 'remove', NAME], exec, () => (removed = true)),
         {
           ...commandStep('codex', `register "${NAME}" with Codex (codex writes ${file})`, 'codex', ['mcp', 'add', NAME, '--', ...cmd], exec),
           run: async () => {
@@ -122,7 +197,7 @@ export function planConnect(o: PlanOptions): Step[] {
               await exec('codex', ['mcp', 'add', NAME, '--', ...cmd]);
             } catch (e) {
               addFailed = true;
-              throw e;
+              throw removedNote(e, removed, 'Codex', target);
             }
           },
         },
@@ -139,7 +214,7 @@ export function planConnect(o: PlanOptions): Step[] {
               atomicWrite(file, after);
             } catch (e) {
               const reason = e instanceof Error ? e.message : String(e);
-              if (addFailed && /^no \[mcp_servers/.test(reason) || (addFailed && (e as NodeJS.ErrnoException).code === 'ENOENT')) {
+              if ((addFailed && /^no \[mcp_servers/.test(reason)) || (addFailed && (e as NodeJS.ErrnoException).code === 'ENOENT')) {
                 throw new Error(`\`codex mcp add\` failed and Codex has no [mcp_servers.${NAME}] table, so there is nothing to set a timeout on (${reason})`);
               }
               throw new Error(
@@ -151,42 +226,35 @@ export function planConnect(o: PlanOptions): Step[] {
         },
       );
     } else if (target === 'claude') {
+      let removed = false;
+      const addArgs = ['mcp', 'add', '-s', 'user', NAME, '--', ...cmd];
       steps.push(
-        removeStep('claude', `remove any old "${NAME}" from Claude Code at user scope first so connect can be re-run (claude edits ~/.claude.json)`, 'claude', ['mcp', 'remove', '-s', 'user', NAME], exec),
-        commandStep(
-          'claude',
-          `register "${NAME}" with Claude Code at user scope (claude writes ~/.claude.json). This script does not change Claude Code's MCP tool timeout; it is believed to be controlled by the MCP_TOOL_TIMEOUT environment variable of Claude Code itself, which has not been verified on this machine`,
-          'claude',
-          ['mcp', 'add', '-s', 'user', NAME, '--', ...cmd],
-          exec,
-        ),
-      );
-    } else if (target === 'opencode') {
-      let present = false;
-      steps.push(
+        removeStep('claude', `remove any old "${NAME}" from Claude Code at user scope first so connect can be re-run (claude edits ~/.claude.json, without a backup)`, 'claude', ['mcp', 'remove', '-s', 'user', NAME], exec, () => (removed = true)),
         {
-          target,
-          description: 'check read-only whether OpenCode already lists "agent-chat" (opencode has no remove command, so an existing entry is left as it is)',
-          display: 'opencode mcp list',
+          ...commandStep(
+            'claude',
+            `register "${NAME}" with Claude Code at user scope (claude writes ~/.claude.json, without a backup). This script does not change Claude Code's MCP tool timeout; it is believed to be controlled by the MCP_TOOL_TIMEOUT environment variable of Claude Code itself, which has not been verified on this machine`,
+            'claude',
+            addArgs,
+            exec,
+          ),
           run: async () => {
             try {
-              present = new RegExp(`(?<![\\w-])${NAME}(?![\\w-])`).test(String((await exec('opencode', ['mcp', 'list'])) ?? ''));
-            } catch {
-              present = false;
+              await exec('claude', addArgs);
+            } catch (e) {
+              throw removedNote(e, removed, 'Claude Code', target);
             }
-            return present ? `"${NAME}" is already listed by OpenCode` : undefined;
-          },
-        },
-        {
-          target,
-          description: `register "${NAME}" with OpenCode in its global config (opencode writes ~/.config/opencode; \`opencode mcp add\` has no timeout option). Skipped if the check above found it already registered`,
-          display: shellJoin(['opencode', 'mcp', 'add', '--global', NAME, '--', ...cmd]),
-          run: async () => {
-            if (present) return 'skipped: already registered';
-            await exec('opencode', ['mcp', 'add', '--global', NAME, '--', ...cmd]);
           },
         },
       );
+    } else if (target === 'opencode') {
+      const file = opencodeConfig(o);
+      steps.push({
+        target,
+        description: `add "${NAME}" to the "mcp" object of OpenCode's global config ${file} (type local, enabled, request timeout ${OPENCODE_TIMEOUT_MS} ms: OpenCode's default is 5000 ms). \`opencode mcp add\` is not used: it writes mcp.servers.${NAME}, which OpenCode (v2.2.6) does not read. Other keys are kept; the original is saved once as ${file}${BAK}; a stale mcp.servers.${NAME} is removed; a file with comments or that is not plain JSON is refused and printed for hand editing`,
+        display: `add "${NAME}" to "mcp" in ${file} (backup: ${file}${BAK})`,
+        run: () => editOpenCodeConfig(file, 'add', openCodeEntry(cmd)),
+      });
     } else {
       for (const profile of o.dshProfiles) {
         const file = dshFile(o.home, profile);
@@ -219,12 +287,12 @@ export function planDisconnect(o: PlanOptions): Step[] {
     } else if (target === 'claude') {
       steps.push(commandStep('claude', `remove "${NAME}" from Claude Code at user scope (claude edits ~/.claude.json)`, 'claude', ['mcp', 'remove', '-s', 'user', NAME], exec));
     } else if (target === 'opencode') {
-      const how = `OpenCode has no "mcp remove" subcommand: delete the "${NAME}" entry under "mcp" in ~/.config/opencode/opencode.json (or opencode.jsonc) by hand`;
+      const file = opencodeConfig(o);
       steps.push({
         target,
-        description: `${how}; this step changes nothing`,
-        display: `no change: opencode has no "mcp remove"; delete the "${NAME}" entry under "mcp" in ~/.config/opencode/opencode.json (or opencode.jsonc) by hand`,
-        run: () => `manual action required: ${how}`,
+        description: `remove "${NAME}" from the "mcp" object of OpenCode's global config ${file} (also a stale mcp.servers.${NAME}; other entries are left alone; original saved once as ${file}${BAK}; a file with comments or that is not plain JSON is refused)`,
+        display: `remove "${NAME}" from "mcp" in ${file} (backup: ${file}${BAK})`,
+        run: () => editOpenCodeConfig(file, 'remove'),
       });
     } else {
       for (const profile of o.dshProfiles) {
@@ -575,7 +643,8 @@ export async function runCli(argv: string[], cli: CliOptions = {}): Promise<numb
   }
 
   const codexHome = !fakeHome && env.CODEX_HOME ? env.CODEX_HOME : undefined;
-  const planOpts: PlanOptions = { targets, repoRoot, home, nodePath, dshProfiles, exec: cli.exec, codexHome };
+  const opencodeConfigDir = !fakeHome && env.XDG_CONFIG_HOME ? join(env.XDG_CONFIG_HOME, 'opencode') : undefined;
+  const planOpts: PlanOptions = { targets, repoRoot, home, nodePath, dshProfiles, exec: cli.exec, codexHome, opencodeConfigDir };
   const steps = (mode === 'connect' ? planConnect : planDisconnect)(planOpts);
 
   out(`${mode === 'connect' ? 'Connect' : 'Disconnect'} plan (home: ${home}${fakeHome ? ', from AGENTCHAT_CONNECT_HOME' : ''})\n`);
@@ -587,7 +656,7 @@ export async function runCli(argv: string[], cli: CliOptions = {}): Promise<numb
 
   let failed = 0;
   for (const s of steps) {
-    if (fakeHome && s.target !== 'dsh') {
+    if (fakeHome && s.target !== 'dsh' && s.target !== 'opencode') {
       out(`[${s.target}] skipped: AGENTCHAT_CONNECT_HOME is set and ${s.target}'s command would use the real home. ${s.display}\n`);
       continue;
     }

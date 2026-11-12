@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -46,8 +46,7 @@ describe('planConnect / planDisconnect display', () => {
       ['codex', `set tool_timeout_sec = 600 in [mcp_servers.agent-chat] of /fake/home/.codex/config.toml (backup: /fake/home/.codex/config.toml.agent-chat.bak)`],
       ['claude', 'claude mcp remove -s user agent-chat'],
       ['claude', `claude mcp add -s user agent-chat -- ${cmd('claude')}`],
-      ['opencode', 'opencode mcp list'],
-      ['opencode', `opencode mcp add --global agent-chat -- ${cmd('opencode')}`],
+      ['opencode', 'add "agent-chat" to "mcp" in /fake/home/.config/opencode/opencode.json (backup: /fake/home/.config/opencode/opencode.json.agent-chat.bak)'],
       [
         'dsh',
         `insert the agent-chat block into /fake/home/.dsh/profiles/web/cordis.patch.yml (backup: /fake/home/.dsh/profiles/web/cordis.patch.yml.agent-chat.bak)`,
@@ -64,7 +63,7 @@ describe('planConnect / planDisconnect display', () => {
     expect(steps.map((s) => [s.target, s.display])).toEqual([
       ['codex', 'codex mcp remove agent-chat'],
       ['claude', 'claude mcp remove -s user agent-chat'],
-      ['opencode', 'no change: opencode has no "mcp remove"; delete the "agent-chat" entry under "mcp" in ~/.config/opencode/opencode.json (or opencode.jsonc) by hand'],
+      ['opencode', 'remove "agent-chat" from "mcp" in /fake/home/.config/opencode/opencode.json (backup: /fake/home/.config/opencode/opencode.json.agent-chat.bak)'],
       ['dsh', 'remove the agent-chat block from /fake/home/.dsh/profiles/web/cordis.patch.yml'],
       ['dsh', 'remove the agent-chat block from /fake/home/.dsh/profiles/tui/cordis.patch.yml'],
     ]);
@@ -98,8 +97,6 @@ describe('commands run through the injected executor', () => {
       ['codex', ['mcp', 'add', 'agent-chat', '--', ...c('codex')]],
       ['claude', ['mcp', 'remove', '-s', 'user', 'agent-chat']],
       ['claude', ['mcp', 'add', '-s', 'user', 'agent-chat', '--', ...c('claude')]],
-      ['opencode', ['mcp', 'list']],
-      ['opencode', ['mcp', 'add', '--global', 'agent-chat', '--', ...c('opencode')]],
       ['codex', ['mcp', 'remove', 'agent-chat']],
       ['claude', ['mcp', 'remove', '-s', 'user', 'agent-chat']],
     ]);
@@ -278,7 +275,7 @@ describe('runCli with a fake home', () => {
     expect(snapshot(home)).toEqual(before);
     expect(o.out).toContain('codex mcp add agent-chat --');
     expect(o.out).toContain('claude mcp add -s user agent-chat --');
-    expect(o.out).toContain('opencode mcp add --global agent-chat --');
+    expect(o.out).toContain('add "agent-chat" to "mcp" in');
     expect(o.out).toContain(join(home, '.dsh/profiles/web/cordis.patch.yml'));
     expect(o.out).toMatch(/--apply/);
   });
@@ -359,7 +356,7 @@ describe('entry point process', () => {
     const code = await new Promise((r) => child.on('close', r));
     expect(err).toBe('');
     expect(code).toBe(0);
-    for (const frag of ['codex mcp add agent-chat --', 'tool_timeout_sec = 600', 'claude mcp add -s user agent-chat --', 'agent-chat.bak', 'opencode mcp add --global agent-chat --', 'cordis.patch.yml']) {
+    for (const frag of ['codex mcp add agent-chat --', 'tool_timeout_sec = 600', 'claude mcp add -s user agent-chat --', 'agent-chat.bak', 'add "agent-chat" to "mcp" in', 'cordis.patch.yml']) {
       expect(out).toContain(frag);
     }
     expect(existsSync(marker)).toBe(false);
@@ -486,11 +483,10 @@ describe('connect is re-runnable (fake executor)', () => {
     mkdirSync(codexDir);
     const file = join(codexDir, 'config.toml');
     writeFileSync(file, '[projects."/x y"]\ntool_timeout_sec = 7\n');
-    const reg = { codex: false, claude: false, opencode: false };
+    const reg = { codex: false, claude: false };
     const calls: string[] = [];
     const exec = async (f: string, a: string[]): Promise<string | void> => {
       calls.push(`${f} ${a.slice(0, 2).join(' ')}`);
-      if (f === 'opencode' && a[1] === 'list') return reg.opencode ? '  ● agent-chat  connected\n' : 'No MCP servers configured\n';
       const k = f as 'codex' | 'claude';
       if (a[1] === 'remove') {
         if (!reg[k]) throw new Error('not found');
@@ -519,9 +515,10 @@ describe('connect is re-runnable (fake executor)', () => {
     const second = await go(w);
     expect(second.code).toBe(0);
     expect(readFileSync(w.file, 'utf8')).toBe(state);
-    expect(w.reg).toEqual({ codex: true, claude: true, opencode: true });
-    expect(second.out).toMatch(/skipped: already registered/);
-    expect(w.calls.filter((c) => c === 'opencode mcp add')).toHaveLength(1);
+    expect(w.reg).toEqual({ codex: true, claude: true });
+    expect(second.out).toMatch(/already registered/);
+    expect(w.calls.filter((c) => c.startsWith('opencode'))).toEqual([]);
+    expect(JSON.parse(readFileSync(join(w.home, '.config/opencode/opencode.json'), 'utf8')).mcp['agent-chat'].enabled).toBe(true);
   });
 
   it('runs the timeout step even when add fails, as long as the table exists', async () => {
@@ -558,14 +555,6 @@ describe('wording and manual steps', () => {
     expect(claude.description).toMatch(/believed to be controlled by the MCP_TOOL_TIMEOUT environment variable/);
     expect(claude.description).toMatch(/not been verified on this machine/);
     expect(claude.description).not.toMatch(/is a global/);
-  });
-
-  it('opencode disconnect under --apply reports manual action, not ok', async () => {
-    const o = { out: '' };
-    const code = await runCli(['disconnect', '--apply', 'opencode'], { env: {}, home: '/h', repoRoot, nodePath, which: () => true, out: (s) => (o.out += s), err: () => {} });
-    expect(code).toBe(0);
-    expect(o.out).toMatch(/manual action required/);
-    expect(o.out).not.toMatch(/^ {2}ok$/m);
   });
 });
 
@@ -604,5 +593,192 @@ describe('dsh file shape and line endings', () => {
     expect(readdirSync(dirname(file)).sort()).toEqual(['cordis.patch.yml', 'cordis.patch.yml.agent-chat.bak']);
     for (const s of planDisconnect(opts(home))) await s.run();
     expect(readFileSync(file, 'utf8')).toBe(original);
+  });
+});
+
+describe('OpenCode global config edit', () => {
+  const OC = (home: string) => join(home, '.config/opencode/opencode.json');
+  const opts = (home: string) => ({ targets: ['opencode'] as Target[], repoRoot, home, nodePath, dshProfiles: [] as string[] });
+  const run = async (fn: typeof planConnect, home: string) => {
+    const notes: unknown[] = [];
+    for (const s of fn(opts(home))) notes.push(await s.run());
+    return notes;
+  };
+  const entry = () => ({
+    type: 'local',
+    command: ['/fake/bin/node', '--import', LOADER, MAIN, '--as', 'opencode'],
+    enabled: true,
+    timeout: 600000,
+  });
+  const put = (home: string, text: string) => {
+    mkdirSync(join(home, '.config/opencode'), { recursive: true });
+    writeFileSync(OC(home), text);
+  };
+
+  it('creates the file when it does not exist', async () => {
+    const home = mk();
+    await run(planConnect, home);
+    expect(JSON.parse(readFileSync(OC(home), 'utf8'))).toEqual({ mcp: { 'agent-chat': entry() } });
+    expect(existsSync(`${OC(home)}.agent-chat.bak`)).toBe(false);
+  });
+
+  it('keeps every other key and the indentation, backs up once, and never overwrites the backup', async () => {
+    const home = mk();
+    const original = '{\n    "$schema": "https://opencode.ai/config.json",\n    "skills": ["a", "b"],\n    "mcp": {\n        "other": { "type": "remote", "url": "https://x" }\n    }\n}\n';
+    put(home, original);
+    await run(planConnect, home);
+    const text = readFileSync(OC(home), 'utf8');
+    expect(text.startsWith('{\n    "$schema"')).toBe(true);
+    expect(text.endsWith('}\n')).toBe(true);
+    const parsed = JSON.parse(text);
+    expect(parsed.skills).toEqual(['a', 'b']);
+    expect(parsed.mcp.other).toEqual({ type: 'remote', url: 'https://x' });
+    expect(parsed.mcp['agent-chat']).toEqual(entry());
+    expect(readFileSync(`${OC(home)}.agent-chat.bak`, 'utf8')).toBe(original);
+    const notes = await run(planConnect, home);
+    expect(readFileSync(OC(home), 'utf8')).toBe(text);
+    expect(readFileSync(`${OC(home)}.agent-chat.bak`, 'utf8')).toBe(original);
+    expect(String(notes[0])).toMatch(/already registered/);
+  });
+
+  it('replaces an outdated agent-chat entry and removes a stale mcp.servers entry left by `opencode mcp add`', async () => {
+    const home = mk();
+    put(home, JSON.stringify({ mcp: { 'agent-chat': { type: 'local', command: ['old'] }, servers: { 'agent-chat': { type: 'local', command: ['old'] }, keep: { type: 'local', command: ['k'] } } } }, null, 2));
+    await run(planConnect, home);
+    const parsed = JSON.parse(readFileSync(OC(home), 'utf8'));
+    expect(parsed.mcp['agent-chat']).toEqual(entry());
+    expect(parsed.mcp.servers).toEqual({ keep: { type: 'local', command: ['k'] } });
+  });
+
+  it.each([
+    ['a comment', '{\n  // note\n  "mcp": {}\n}\n'],
+    ['a trailing comma', '{ "mcp": {}, }\n'],
+    ['a non-object mcp', '{ "mcp": [] }\n'],
+    ['a non-object root', '[]\n'],
+  ])('refuses %s: changes nothing and says to edit by hand with the entry', async (_n, content) => {
+    const home = mk();
+    put(home, content);
+    for (const s of planConnect(opts(home))) {
+      await expect(Promise.resolve().then(() => s.run())).rejects.toThrow(/by hand.*"agent-chat"/s);
+    }
+    expect(readFileSync(OC(home), 'utf8')).toBe(content);
+    expect(existsSync(`${OC(home)}.agent-chat.bak`)).toBe(false);
+  });
+
+  it('uses opencode.jsonc when it is the file that exists', async () => {
+    const home = mk();
+    mkdirSync(join(home, '.config/opencode'), { recursive: true });
+    writeFileSync(join(home, '.config/opencode/opencode.jsonc'), '{}\n');
+    await run(planConnect, home);
+    expect(JSON.parse(readFileSync(join(home, '.config/opencode/opencode.jsonc'), 'utf8')).mcp['agent-chat']).toEqual(entry());
+    expect(existsSync(OC(home))).toBe(false);
+  });
+
+  it('honours an explicit config directory (XDG_CONFIG_HOME)', async () => {
+    const home = mk();
+    const dir = mk();
+    for (const s of planConnect({ ...opts(home), opencodeConfigDir: join(dir, 'opencode') })) await s.run();
+    expect(JSON.parse(readFileSync(join(dir, 'opencode/opencode.json'), 'utf8')).mcp['agent-chat']).toEqual(entry());
+    expect(existsSync(join(home, '.config'))).toBe(false);
+  });
+
+  it('disconnect removes only agent-chat (and the stale servers entry), leaving the rest', async () => {
+    const home = mk();
+    put(home, JSON.stringify({ skills: ['s'], mcp: { 'agent-chat': entry(), other: { type: 'local', command: ['o'] }, servers: { 'agent-chat': { type: 'local', command: ['x'] } } } }, null, 2) + '\n');
+    await run(planDisconnect, home);
+    expect(JSON.parse(readFileSync(OC(home), 'utf8'))).toEqual({ skills: ['s'], mcp: { other: { type: 'local', command: ['o'] } } });
+    expect(existsSync(`${OC(home)}.agent-chat.bak`)).toBe(true);
+    const again = await run(planDisconnect, home);
+    expect(String(again[0])).toMatch(/not registered/);
+  });
+
+  it('disconnect with no config file changes nothing; with unparseable config fails and leaves it', async () => {
+    const home = mk();
+    expect(String((await run(planDisconnect, home))[0])).toMatch(/does not exist/);
+    expect(existsSync(OC(home))).toBe(false);
+    put(home, '{ // c\n}');
+    for (const s of planDisconnect(opts(home))) await expect(Promise.resolve().then(() => s.run())).rejects.toThrow(/by hand/);
+    expect(readFileSync(OC(home), 'utf8')).toBe('{ // c\n}');
+  });
+
+  it('runCli passes XDG_CONFIG_HOME to the plan', async () => {
+    const home = mk();
+    const xdg = mk();
+    const o = { out: '' };
+    const code = await runCli(['connect', 'opencode'], { env: { XDG_CONFIG_HOME: xdg }, home, repoRoot, nodePath, which: () => true, out: (s) => (o.out += s), err: () => {} });
+    expect(code).toBe(0);
+    expect(o.out).toContain(join(xdg, 'opencode/opencode.json'));
+  });
+});
+
+describe('writes go through symlinks', () => {
+  it('a symlinked OpenCode config stays a symlink and its target is updated', async () => {
+    const home = mk();
+    const real = join(mk(), 'real.json');
+    writeFileSync(real, '{\n  "skills": []\n}\n');
+    mkdirSync(join(home, '.config/opencode'), { recursive: true });
+    const link = join(home, '.config/opencode/opencode.json');
+    symlinkSync(real, link);
+    for (const s of planConnect({ targets: ['opencode'], repoRoot, home, nodePath, dshProfiles: [] })) await s.run();
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(real, 'utf8')).mcp['agent-chat'].enabled).toBe(true);
+  });
+
+  it('the same for a DSH patch file', async () => {
+    const home = mk();
+    const dir = join(home, '.dsh/profiles/web');
+    mkdirSync(dir, { recursive: true });
+    const real = join(mk(), 'real.yml');
+    writeFileSync(real, '- id: x\n');
+    const link = join(dir, 'cordis.patch.yml');
+    symlinkSync(real, link);
+    for (const s of planConnect({ targets: ['dsh'], repoRoot, home, nodePath, dshProfiles: ['web'] })) await s.run();
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readFileSync(real, 'utf8')).toContain('# >>> agent-chat');
+  });
+
+  it('the same for the Codex config.toml timeout edit', async () => {
+    const home = mk();
+    mkdirSync(join(home, '.codex'));
+    const real = join(mk(), 'real.toml');
+    writeFileSync(real, '[mcp_servers.agent-chat]\ncommand = "n"\n');
+    const link = join(home, '.codex/config.toml');
+    symlinkSync(real, link);
+    for (const s of planConnect({ targets: ['codex'], repoRoot, home, nodePath, dshProfiles: [], exec: async () => {} })) await s.run();
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readFileSync(real, 'utf8')).toContain('tool_timeout_sec = 600');
+  });
+});
+
+describe('a failed re-add after the old registration was removed', () => {
+  const runTarget = async (target: 'codex' | 'claude', removeFails: boolean) => {
+    const home = mk();
+    mkdirSync(join(home, '.codex'));
+    writeFileSync(join(home, '.codex/config.toml'), '');
+    const exec = async (_f: string, a: string[]) => {
+      if (a.includes('remove')) {
+        if (removeFails) throw new Error('not found');
+        return;
+      }
+      throw new Error('add exploded');
+    };
+    const o = { out: '' };
+    const code = await runCli(['connect', '--apply', target], { env: {}, home, repoRoot, nodePath, exec, which: () => true, out: (s) => (o.out += s), err: () => {} });
+    return { code, out: o.out };
+  };
+
+  it.each([['codex'], ['claude']] as const)('%s: says the previous registration was removed and how to retry', async (t) => {
+    const r = await runTarget(t, false);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/add exploded/);
+    expect(r.out).toMatch(/previous "agent-chat" registration was removed/);
+    expect(r.out).toMatch(/now absent/);
+    expect(r.out).toContain(`npm run connect -- --apply ${t}`);
+  });
+
+  it.each([['codex'], ['claude']] as const)('%s: does not claim a removal when there was nothing to remove', async (t) => {
+    const r = await runTarget(t, true);
+    expect(r.out).toMatch(/add exploded/);
+    expect(r.out).not.toMatch(/was removed/);
   });
 });
