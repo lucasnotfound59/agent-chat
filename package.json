@@ -13,7 +13,9 @@
     "typecheck": "tsc --noEmit",
     "hub": "tsx packages/hub/src/main.ts",
     "smoke": "tsx packages/hub/scripts/smoke.ts",
-    "mcp": "tsx packages/mcp/src/main.ts"
+    "mcp": "tsx packages/mcp/src/main.ts",
+    "connect": "tsx packages/mcp/src/connect.ts connect",
+    "disconnect": "tsx packages/mcp/src/connect.ts disconnect"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
