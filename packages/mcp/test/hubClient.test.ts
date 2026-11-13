@@ -266,6 +266,68 @@ describe('createHubClient timeouts and transport', () => {
     expect(err.message).toBe('claude timed out');
   });
 
+  it('the default transport reassembles a UTF-8 character split across two chunks, and sends a CJK question intact', async () => {
+    let got = '';
+    const s = await withServer((q, res) => {
+      const parts: Buffer[] = [];
+      q.on('data', (d: Buffer) => parts.push(d));
+      q.on('end', () => {
+        got = Buffer.concat(parts).toString('utf8');
+        const bytes = Buffer.from(JSON.stringify({ reply: '回答：用 SIGTERM' }), 'utf8');
+        const cut = bytes.indexOf(Buffer.from('答', 'utf8')) + 1; // inside the 3-byte character
+        res.setHeader('content-type', 'application/json');
+        res.write(bytes.subarray(0, cut));
+        setTimeout(() => res.end(bytes.subarray(cut)), 50);
+      });
+    });
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok' });
+    expect(await c.ask('DSH', '为什么？')).toBe('回答：用 SIGTERM');
+    await s.close();
+    expect(JSON.parse(got).question).toBe('为什么？');
+  });
+
+  it('the default transport turns a non-JSON error page into a HubResponseError naming the status', async () => {
+    const s = await withServer((_q, res) => {
+      res.statusCode = 500;
+      res.setHeader('content-type', 'text/html');
+      res.end('<html>Internal Server Error</html>');
+    });
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok' });
+    const err = await c.ask('claude', 'q').catch((x) => x);
+    await s.close();
+    expect(err).toBeInstanceOf(HubResponseError);
+    expect(err.message).toBe('hub returned HTTP 500');
+  });
+
+  it('the default transport treats a 200 with a non-JSON body as no reply', async () => {
+    const s = await withServer((_q, res) => res.end('ok'));
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok' });
+    const err = await c.ask('claude', 'q').catch((x) => x);
+    await s.close();
+    expect(err).not.toBeInstanceOf(HubUnreachableError);
+    expect(err.message).toBe('the hub returned no reply');
+  });
+
+  it('the default transport: a hub that drops the connection mid-answer is not reported as hub-not-running', async () => {
+    const s = await withServer((q, res) => {
+      q.resume();
+      q.on('end', () => {
+        res.setHeader('content-type', 'application/json');
+        res.setHeader('content-length', '100');
+        res.write('{"reply": "half');
+        setTimeout(() => res.socket?.destroy(), 30);
+      });
+    });
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok' });
+    const err = await c.ask('claude', 'q').catch((x) => x);
+    await s.close();
+    // it was running a moment ago, so "start the hub" would be the wrong advice
+    expect(err).not.toBeInstanceOf(HubUnreachableError);
+    expect(err.message).toBe(
+      'The connection to the hub was lost while it was answering (the hub may have stopped or restarted). Try again; if it keeps happening, ask the user to check the hub.',
+    );
+  });
+
   it('the default transport aborts the request when the caller cancels', async () => {
     let closed = false;
     const s = await withServer((q) => q.socket.on('close', () => (closed = true)));

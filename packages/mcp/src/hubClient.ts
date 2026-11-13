@@ -22,6 +22,10 @@ export class HubResponseError extends Error {}
 const UNAUTHORIZED_MESSAGE =
   'The hub rejected the access token (HTTP 401). The token in the keychain may have changed since this tool started: ask the user to restart the hub and this agent, then try again.';
 
+const RESPONSE_LOST = 'AGENTCHAT_RESPONSE_LOST';
+const RESPONSE_LOST_MESSAGE =
+  'The connection to the hub was lost while it was answering (the hub may have stopped or restarted). Try again; if it keeps happening, ask the user to check the hub.';
+
 const ASK_TIMEOUT_MS = 600000;
 const LIST_TIMEOUT_MS = 30000;
 const ASK_TIMEOUT_MESSAGE = 'The hub did not answer within 10 minutes.';
@@ -52,7 +56,10 @@ const httpFetch = ((url: string | URL | Request, init?: RequestInit): Promise<Re
         }
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
-        res.on('error', (e) => reject(e));
+        // The hub answered and then the connection broke: reachable a moment ago, so not "hub not running".
+        res.on('error', (e) =>
+          reject(signal?.aborted ? signal.reason : new TypeError('fetch failed', { cause: Object.assign(new Error(e.message), { code: RESPONSE_LOST }) })),
+        );
         res.on('end', () => {
           const headers = new Headers();
           const ct = res.headers['content-type'];
@@ -136,6 +143,7 @@ export function createHubClient(opts: {
       // undici's own headers/body timeouts are timeouts, not a missing hub.
       const code = (err as { cause?: { code?: unknown } }).cause?.code;
       if (code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT') throw new Error(timeoutMessage);
+      if (code === RESPONSE_LOST) throw new Error(RESPONSE_LOST_MESSAGE);
       // undici reports a refused redirect as a TypeError whose cause says "unexpected redirect".
       if (/unexpected redirect/i.test(String((err as { cause?: { message?: unknown } }).cause?.message ?? ''))) {
         throw new Error('The hub answered with a redirect, which is not allowed.');
