@@ -1,8 +1,10 @@
 import { defineWorkspace } from 'vitest/config';
 
-// packages/mcp gets a setup file that makes it impossible for a test to reach a real agent CLI
-// or the user's global configs; the other packages are configured as before.
+// Every package gets the same setup file, which makes it impossible for a test to reach a real
+// agent CLI, the user's global configs or the keychain (see test/guard.ts).
+const setupFiles = ['test/guard.ts'];
+
 export default defineWorkspace([
-  { extends: './vitest.config.ts', test: { name: 'mcp', include: ['packages/mcp/**/*.test.ts'], setupFiles: ['packages/mcp/test/setup.ts'] } },
-  { extends: './vitest.config.ts', test: { name: 'others', include: ['packages/{adapters,hub}/**/*.test.ts'] } },
+  { extends: './vitest.config.ts', test: { name: 'mcp', include: ['packages/mcp/**/*.test.ts'], setupFiles } },
+  { extends: './vitest.config.ts', test: { name: 'others', include: ['packages/{adapters,hub}/**/*.test.ts'], setupFiles } },
 ]);
