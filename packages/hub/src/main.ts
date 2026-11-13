@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   ClaudeAdapter,
   CodexAdapter,
@@ -16,6 +17,7 @@ import { AvailabilityMonitor } from './availability';
 import { seed } from './bootstrap';
 import { ConfigStore } from './config';
 import { parsePort } from './env';
+import { openBrowser, webUrl } from './open';
 import { Scheduler } from './scheduler';
 import { Bus, buildServer } from './server';
 import { Store } from './store';
@@ -86,7 +88,10 @@ const ask = new AskService({
   availabilityReason: (n) => availability.get(n)?.reason ?? '尚未检查',
   emit: (e) => bus.emit(e),
 });
-const app = buildServer({ store, scheduler, config, token: () => token, bus, availability, ask, refreshAvailability: () => monitor.refresh() });
+const app = buildServer({
+  store, scheduler, config, token: () => token, bus, availability, ask, refreshAvailability: () => monitor.refresh(),
+  webRoot: resolve(dirname(fileURLToPath(import.meta.url)), '../../web/dist'),
+});
 
 await monitor.refresh();
 setInterval(() => void monitor.refresh(), 60000).unref();
@@ -100,6 +105,11 @@ for (const a of adapterList) {
   const s = availability.get(a.name)!;
   console.log(`  ${a.displayName}: ${s.ok ? '可用' : `不可用（${s.reason}）`}`);
 }
+
+const url = webUrl(port, token);
+console.log(`界面：${url}`);
+console.log('（这个地址里含访问令牌，不要发给别人）');
+if (openBrowser(url, process.env)) console.log('已在默认浏览器中打开。设置 AGENTCHAT_NO_OPEN=1 可以不自动打开。');
 
 let shuttingDown = false;
 const shutdown = async () => {

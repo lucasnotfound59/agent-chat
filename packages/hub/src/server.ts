@@ -12,6 +12,7 @@ import { parseMentions } from './mentions';
 import type { Scheduler } from './scheduler';
 import type { Store } from './store';
 import type { Attachment, HubEvent, Settings } from './types';
+import { WEB_ROUTES, registerWeb } from './web';
 
 export class Bus {
   private readonly listeners = new Set<(e: HubEvent) => void>();
@@ -40,6 +41,8 @@ export interface ServerDeps {
   ask: AskService;
   /** Re-checks every adapter (the hub's AvailabilityMonitor.refresh). */
   refreshAvailability: () => Promise<void>;
+  /** Directory of the built web UI (packages/web/dist); omitted in tests that do not need it. */
+  webRoot?: string;
 }
 
 const ASK_STATUS: Record<AskErrorCode, number> = {
@@ -116,6 +119,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.addHook('onRequest', async (req, reply) => {
     if (!hostAllowed(req.headers.host)) return reply.code(403).send({ error: 'forbidden host' });
     if (req.routeOptions.url === '/ws') return;
+    if (deps.webRoot !== undefined && WEB_ROUTES.has(req.routeOptions.url ?? '')) return;
     const header = req.headers.authorization;
     const given = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : undefined;
     if (!tokenMatches(deps.token(), given)) return reply.code(401).send({ error: 'unauthorized' });
@@ -322,5 +326,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   );
 
+  if (deps.webRoot !== undefined) registerWeb(app, deps.webRoot);
   return app;
 }
