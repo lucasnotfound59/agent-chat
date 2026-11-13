@@ -36,7 +36,10 @@ npm run hub
 
 设置通过 `PUT /api/config` 写入：
 
-- `triageAgent`：群聊里决定谁发言的 agent（不再需要 API key）。不设置时按 `dsh`、`opencode`、`codex`、`claude` 的顺序取第一个可用的；可以指定为某个 agent 的名字，如 `{"triageAgent":"codex"}`；设为字符串 `"off"` 则关闭，此时群里只有被 @ 的 agent 会回复；设为 `null` 不是关闭，而是恢复上面的自动选择。代价：每个群聊回合在 agent 发言之前多等几秒到十几秒，因为要先调用一次所选 agent 来判断谁发言。
+- `triageAgent`：群聊里决定谁发言的 agent（不再需要 API key）。不设置时按 `dsh`、`opencode`、`codex`、`claude` 的顺序取第一个可用的；可以指定为某个 agent 的名字，如 `{"triageAgent":"codex"}`；设为字符串 `"off"` 则关闭，此时群里只有被 @ 的 agent 会回复；设为 `null` 不是关闭，而是恢复上面的自动选择。代价：每个群聊回合在 agent 发言之前多等几秒到十几秒，因为要先调用一次所选 agent 来判断谁发言。几点说明：
+  - 判断谁发言是一次真实的 agent 启动（占用你的订阅额度），但**不记为唤起记录，也不计入每日唤起上限**；中枢每次判断会在日志里打一行（用哪个 agent、耗时、结果，不含消息内容）。
+  - 判断过程服从全局停止和会话暂停：停止或暂停会中止正在进行的判断；会话已达每日上限时不再发起判断。
+  - 把 `triageAgent` 指定为一个当前不可用的 agent，等于关闭判断，不会退回到别的 agent。
 - `dsh`：DSH 使用的模型，`{ provider, model }`。
 
 ## 在有界面之前怎么用
@@ -99,7 +102,9 @@ agent 在自己的软件里干活时，可以通过 MCP 服务向聊天里的其
 - `list_members`：列出可以提问的成员及其简介、是否可用；
 - `ask`：向某个成员提问并等待回答（回答可能要一到两分钟，提问超时沿用会话设置 `timeoutMs`，默认 300000 毫秒）。
 
-使用前必须先启动中枢（`npm run hub`），否则工具会提示中枢没有运行。
+使用前必须先启动中枢（`npm run hub`），否则工具会提示中枢没有运行。`ask` 最长等 600 秒；`list_members` 最长等 30 秒。
+
+登记的限制：登记内容里写死了本仓库的路径、当前 Node 的路径和默认端口 4317（`connect` 不写 `AGENTCHAT_PORT`）。移动仓库、切换 Node 版本后需要重新运行 `connect`；中枢改用其他端口时，已登记的软件连不上，目前不支持。macOS 可能禁止图形界面的软件访问 `~/Documents`，只在终端里的 Codex 试过，图形界面的软件没有试过。
 
 登记命令：
 
@@ -124,16 +129,30 @@ OpenCode 不用 `opencode mcp add`：实测 OpenCode v2.2.6 的该命令写出 `
 
 `as` 参数（提问者身份）在 `/api/ask` 上由调用方自己声明，任何持有令牌的进程都可以冒用别人的名字；MCP 服务通过启动参数 `--as` 固定自己的身份，但这不是安全边界。
 
+令牌持有者的权限：持有令牌的人可以调用每一个接口，包括以任何 agent 的名义调用 `/api/ask`、以你的身份发消息、修改每日唤起上限。所以防递归的措施和上限都管不住令牌持有者（DSH 的沙箱读得到钥匙串，所以这一点相关）。
+
+重新运行 `connect` 会先删除再重新添加 Codex 的条目，你手工加在这个表里的键都会丢失（包括下面的自动批准键）。
+
+Codex 的工具审批：非交互的 `codex exec` 会拒绝 MCP 工具调用（报 "approval policy is never"），除非设置了 `mcp_servers.agent-chat.default_tools_approval_mode = "approve"`。`connect` 有意不写这个自动批准的键。需要时自己加：单次运行用
+
+```bash
+codex exec -c 'mcp_servers.agent-chat.default_tools_approval_mode="approve"' ...
+```
+
+或者在 `~/.codex/config.toml` 的 `[mcp_servers.agent-chat]` 表里加一行 `default_tools_approval_mode = "approve"`。交互式的 Codex 不需要，它会弹出审批询问。
+
 ### 隔离
 
-聊天中的 agent 一律只读，并且关闭所有 MCP 服务、插件和连接器，所以被提问的 agent 看不到上面的两个工具，不会互相无限递归。具体做法：Codex 用 `--ignore-user-config --disable apps --disable plugins`；Claude Code 用 `--strict-mcp-config`；OpenCode 用自己定义的 `agentchat` agent，权限默认全部拒绝；DSH 用 `headless` profile。中枢启动的每个子进程还带环境变量 `AGENTCHAT_INVOCATION=1`，MCP 服务看到它就不提供任何工具。
+聊天中的 agent 一律只读，并且关闭所有 MCP 服务、插件和连接器，所以被提问的 agent 看不到上面的两个工具，不会互相无限递归。具体做法：Codex 用 `--ignore-user-config --disable apps --disable plugins`；Claude Code 用 `--strict-mcp-config`；OpenCode 用自己定义的 `agentchat` agent，只允许 read、grep、glob、webfetch、websearch，其余全部拒绝；DSH 用 `headless` profile。中枢启动的每个子进程还带环境变量 `AGENTCHAT_INVOCATION=1`，MCP 服务看到它就不提供任何工具；但这一层只是尽力而为：agent 软件不一定把环境变量转给它启动的 MCP 服务（Codex 和 DSH 没有验证过）。实测证明有效的是各软件自己的 MCP 隔离这一层。
 
-DSH 的例外：DSH 的隔离依赖 `headless` profile 本身没有配置 MCP 服务，`connect` 不会往 `headless` 里写。如果你自己在 `headless` profile 里配了 MCP 服务，聊天时它们会被加载。
+DSH 的例外：DSH 的隔离完全依赖你没有往 `headless` profile 里加过 MCP 服务（`headless` profile 本身没有配置 MCP 服务），`connect` 不会往 `headless` 里写。如果你自己在 `headless` profile 里配了 MCP 服务，聊天时它们会被加载。
 
 冒烟脚本对每个 agent 做三个 `complete()` 检查：原始提问（回答包含 `PONG`）、MCP 隔离（回答 `NO_MCP_TOOLS`）、工具清单（列出全部工具名，其中不能出现 `agent-chat`、`agent_chat`、`list_members`、`mcp__`）。
 
 ### 尚未验证的部分
 
+- 真实的 `connect --apply` 从未对真实的 Codex、Claude Code、DSH 运行过：Codex 那次实测是用每次调用的 `-c` 覆盖把 MCP 服务接上去的，没有经过 `connect`；OpenCode 只在临时配置目录里试过条目的形状。第一次真实运行就是测试：运行前先把相关配置文件（`~/.codex/config.toml`、`~/.claude.json`、OpenCode 的全局配置、DSH 的 `cordis.patch.yml`）自己复制一份，运行后再和 `.agent-chat.bak`（以及你的复制）对比；建议一次只登记一个目标。
+- 在中枢里运行 DSH 时，观察到 `~/.dsh/profiles/headless/cordis.patch.yml` 的修改时间变了（大小没变）。本仓库里没有任何代码写那个文件（中枢用 `--patch` 从自己的数据目录传模型覆盖），看起来是 DSH 自己改的，但没有证实。
 - Claude Code 的命令行在这台机器上没有登录，涉及 Claude Code 的一切（聊天调用、`--strict-mcp-config` 的隔离效果、`claude mcp add` 的登记、冒烟脚本里新增的 `complete()` 检查）都没有用真实命令行验证过。
 - Claude Code 的 MCP 工具超时是否由环境变量 `MCP_TOOL_TIMEOUT` 控制、是否会被遵守，未验证；`connect` 不改它。如果 `ask` 在 Claude Code 里提前超时，需要自己设置这个环境变量。
 - OpenCode 的"聊天时看不到 `agent-chat` 工具"用真实命令行测过：把 `agent-chat` 登记在（临时目录里的）全局配置、适配器的 `opencode.json` 放在另一个工作目录，`agentchat` agent 的工具只有 `glob grep read skill webfetch websearch`，要求它调用 `list_members` 时没有发生任何工具调用，而默认 agent 能调用（通过它的 `execute` 工具）。OpenCode 的 MCP 工具不一定出现在模型自述的工具清单里，所以自述清单本身不是可靠证据，冒烟脚本里 OpenCode 的"MCP 隔离"一步实际上是空洞的（默认 agent 也会回答 `NO_MCP_TOOLS`）；可靠的证据是上面这种"要求它真的去调用"的实测。
