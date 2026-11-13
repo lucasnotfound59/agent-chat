@@ -697,7 +697,20 @@ export async function runCli(argv: string[], cli: CliOptions): Promise<number> {
   return failed ? 1 : 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * True when `argv1` names the module at `moduleUrl`. Compares real paths, so running the script through a
+ * symlinked checkout still counts (a literal URL comparison made it exit 0 without doing anything).
+ */
+export function isEntryPoint(moduleUrl: string, argv1: string | undefined): boolean {
+  if (!argv1) return false;
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argv1);
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint(import.meta.url, process.argv[1])) {
   // The only place the real executor, home directory and environment are supplied.
   process.exitCode = await runCli(process.argv.slice(2), { exec: defaultExec, home: homedir(), env: process.env });
 }

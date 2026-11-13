@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  isEntryPoint,
   planConnect,
   planDisconnect,
   removeDshEntry,
@@ -815,5 +816,31 @@ describe('a failed re-add after the old registration was removed', () => {
     const r = await runTarget(t, true);
     expect(r.out).toMatch(/add exploded/);
     expect(r.out).not.toMatch(/was removed/);
+  });
+});
+
+describe('isEntryPoint', () => {
+  it('is true for the module itself, also when reached through a symlinked checkout', () => {
+    const dir = mk();
+    const real = join(dir, 'real');
+    mkdirSync(real);
+    const file = join(real, 'connect.ts');
+    writeFileSync(file, '');
+    symlinkSync(real, join(dir, 'link'));
+    const url = pathToFileURL(file).href;
+    expect(isEntryPoint(url, file)).toBe(true);
+    // before the fix this compared URLs literally and the script exited 0 without doing anything
+    expect(isEntryPoint(url, join(dir, 'link', 'connect.ts'))).toBe(true);
+  });
+
+  it('is false for another file, a missing argv path, or one that does not exist', () => {
+    const dir = mk();
+    const a = join(dir, 'a.ts');
+    const b = join(dir, 'b.ts');
+    writeFileSync(a, '');
+    writeFileSync(b, '');
+    expect(isEntryPoint(pathToFileURL(a).href, b)).toBe(false);
+    expect(isEntryPoint(pathToFileURL(a).href, undefined)).toBe(false);
+    expect(isEntryPoint(pathToFileURL(a).href, join(dir, 'missing.ts'))).toBe(false);
   });
 });
