@@ -33,13 +33,17 @@ const OK = [
 ].join('\n');
 
 describe('opencodeArgs', () => {
-  it('uses the read-only agentchat agent and passes the prompt as the message', () => {
-    expect(opencodeArgs(req, 'PROMPT')).toEqual(['run', '--format', 'json', '--agent', 'agentchat', 'PROMPT']);
+  it('uses the read-only agentchat agent and passes the prompt as the message, after --', () => {
+    expect(opencodeArgs(req, 'PROMPT')).toEqual(['run', '--format', 'json', '--agent', 'agentchat', '--', 'PROMPT']);
   });
   it('adds the session when resuming', () => {
     expect(opencodeArgs({ ...req, harnessSessionId: sid }, 'PROMPT')).toEqual([
-      'run', '--format', 'json', '--agent', 'agentchat', '--session', sid, 'PROMPT',
+      'run', '--format', 'json', '--agent', 'agentchat', '--session', sid, '--', 'PROMPT',
     ]);
+  });
+  it('a prompt that starts with dashes stays the message (checked once against opencode v2.2.6)', () => {
+    const args = opencodeArgs(req, '--help me');
+    expect(args.slice(-2)).toEqual(['--', '--help me']);
   });
 });
 

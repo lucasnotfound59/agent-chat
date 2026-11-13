@@ -45,7 +45,8 @@ export function ensureOpenCodeConfig(workdir: string): void {
 export function opencodeArgs(req: ArgsRequest, prompt: string): string[] {
   const args = ['run', '--format', 'json', '--agent', OPENCODE_AGENT_NAME];
   if (req.harnessSessionId) args.push('--session', req.harnessSessionId);
-  args.push(prompt);
+  // `--` keeps a prompt that starts with dashes from being read as a flag (opencode v2.2.6 accepts it).
+  args.push('--', prompt);
   return args;
 }
 
