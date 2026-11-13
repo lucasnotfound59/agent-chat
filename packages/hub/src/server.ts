@@ -126,7 +126,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   app.register(async (ws) => {
-    ws.get('/ws', { websocket: true }, (socket) => {
+    ws.get('/ws', { websocket: true }, (socket, req) => {
+      // A browser always sends Origin; another site's page must not reach the event stream.
+      const origin = req.headers.origin;
+      if (origin !== undefined && origin.toLowerCase() !== `http://${(req.headers.host ?? '').toLowerCase()}`) {
+        socket.close(4003, 'forbidden origin');
+        return;
+      }
       let off: (() => void) | null = null;
       socket.on('message', (raw: Buffer) => {
         if (off) return;
@@ -153,7 +159,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ...m,
       availability: m.adapter ? (availability.get(m.adapter) ?? { ok: false, reason: '尚未检查' }) : null,
     })),
-    conversations: store.listConversations(),
+    conversations: store.listConversations().map((c) => ({ ...c, lastMessage: store.listMessages(c.id, { limit: 1 })[0] ?? null })),
     stopped: scheduler.isStopped(),
   }));
 

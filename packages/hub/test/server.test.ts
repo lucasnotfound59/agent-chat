@@ -175,6 +175,16 @@ describe('state', () => {
     expect(s.conversations).toHaveLength(2);
     expect(s.stopped).toBe(false);
   });
+
+  it('includes each conversation\'s last message', async () => {
+    const s = await state();
+    const a = s.members.find((m: any) => m.name === 'A');
+    const g = (await app.inject({ method: 'POST', url: '/api/conversations', headers: auth, payload: { title: 'G2', memberIds: [a.id] } })).json();
+    expect((await state()).conversations.find((c: any) => c.id === g.id).lastMessage).toBeNull();
+    // no @mention and no triage in this fixture, so nobody answers
+    await app.inject({ method: 'POST', url: `/api/conversations/${g.id}/messages`, headers: auth, payload: { body: '大家好' } });
+    expect((await state()).conversations.find((c: any) => c.id === g.id).lastMessage).toMatchObject({ body: '大家好' });
+  });
 });
 
 describe('messages', () => {
@@ -391,6 +401,43 @@ describe('websocket', () => {
     await new Promise((r) => bad.on('open', r));
     bad.send(JSON.stringify({ type: 'auth', token: 'wrong' }));
     await new Promise((r) => bad.on('close', r));
+  });
+
+  it('rejects a browser connection from another origin, accepts its own origin', async () => {
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const port = (app.server.address() as AddressInfo).port;
+
+    const evil = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { origin: 'http://evil.example' } });
+    const code = await new Promise<number>((r) => evil.on('close', (c) => r(c)));
+    expect(code).toBe(4003);
+
+    const own = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { origin: `http://127.0.0.1:${port}` } });
+    const got: any[] = [];
+    own.on('message', (d) => got.push(JSON.parse(d.toString())));
+    await new Promise((r) => own.on('open', r));
+    own.send(JSON.stringify({ type: 'auth', token }));
+    await until(() => got.some((e) => e.type === 'ready'));
+    own.close();
+  });
+
+  it('pushes a conversation event for a new group and for a settings change', async () => {
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const port = (app.server.address() as AddressInfo).port;
+    const got: any[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    ws.on('message', (d) => got.push(JSON.parse(d.toString())));
+    await new Promise((r) => ws.on('open', r));
+    ws.send(JSON.stringify({ type: 'auth', token }));
+    await until(() => got.some((e) => e.type === 'ready'));
+
+    const s = await state();
+    const a = s.members.find((m: any) => m.name === 'A');
+    const created = await app.inject({ method: 'POST', url: '/api/conversations', headers: auth, payload: { title: 'G1', memberIds: [a.id] } });
+    const id = created.json().id;
+    await until(() => got.some((e) => e.type === 'conversation' && e.conversation.id === id));
+    await app.inject({ method: 'PATCH', url: `/api/conversations/${id}/settings`, headers: auth, payload: { paused: true } });
+    await until(() => got.some((e) => e.type === 'conversation' && e.conversation.id === id && e.conversation.settings.paused));
+    ws.close();
   });
 });
 
