@@ -6,7 +6,10 @@
   "engines": { "node": ">=22.13" },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/web",
+    "build": "vite build --config packages/web/vite.config.ts",
+    "web:dev": "vite --config packages/web/vite.config.ts",
+    "e2e": "npm run build && playwright test -c packages/web/playwright.config.ts",
     "hub": "tsx packages/hub/src/main.ts",
     "smoke": "tsx packages/hub/scripts/smoke.ts",
     "mcp": "tsx packages/mcp/src/main.ts",
