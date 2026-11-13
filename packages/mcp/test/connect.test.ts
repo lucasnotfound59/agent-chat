@@ -70,15 +70,15 @@ describe('planConnect / planDisconnect display', () => {
   });
 
   it('quotes arguments that need it', () => {
-    const [s] = planConnect({ targets: ['claude'], repoRoot: '/my repo', home: '/h', nodePath: '/n o/node', dshProfiles: [] });
+    const [s] = planConnect({ targets: ['claude'], repoRoot: '/my repo', home: '/h', nodePath: '/n o/node', dshProfiles: [], exec: async () => {} });
     expect(s.display).toBe('claude mcp remove -s user agent-chat');
-    const add = planConnect({ targets: ['claude'], repoRoot: '/my repo', home: '/h', nodePath: '/n o/node', dshProfiles: [] })[1];
+    const add = planConnect({ targets: ['claude'], repoRoot: '/my repo', home: '/h', nodePath: '/n o/node', dshProfiles: [], exec: async () => {} })[1];
     expect(add.display).toContain(`'/n o/node' --import file:///my%20repo/node_modules/tsx/dist/loader.mjs '/my repo/packages/mcp/src/main.ts' --as claude`);
   });
 
   it('only plans the requested targets; dsh with no profiles plans nothing', () => {
     expect(plan(planConnect, '/h', ['claude']).map((s) => s.target)).toEqual(['claude', 'claude']);
-    expect(planConnect({ targets: ['dsh'], repoRoot, home: '/h', nodePath, dshProfiles: [] })).toEqual([]);
+    expect(planConnect({ targets: ['dsh'], repoRoot, home: '/h', nodePath, dshProfiles: [], exec: async () => {} })).toEqual([]);
   });
 });
 
@@ -199,7 +199,7 @@ describe('dsh steps on a temp home', () => {
     mkdirSync(dir, { recursive: true });
     const file = join(dir, 'cordis.patch.yml');
     writeFileSync(file, original);
-    const opts = { targets: ['dsh'] as Target[], repoRoot, home, nodePath, dshProfiles: ['web'] };
+    const opts = { targets: ['dsh'] as Target[], repoRoot, home, nodePath, dshProfiles: ['web'], exec: async () => {} };
 
     for (const s of planConnect(opts)) await s.run();
     const once = readFileSync(file, 'utf8');
@@ -226,7 +226,7 @@ describe('dsh steps on a temp home', () => {
 
   it('fails clearly when the profile file is missing', async () => {
     const home = mk();
-    const [s] = planConnect({ targets: ['dsh'], repoRoot, home, nodePath, dshProfiles: ['web'] });
+    const [s] = planConnect({ targets: ['dsh'], repoRoot, home, nodePath, dshProfiles: ['web'], exec: async () => {} });
     await expect(Promise.resolve().then(() => s.run())).rejects.toThrow(/cordis\.patch\.yml/);
   });
 });
@@ -258,6 +258,7 @@ describe('runCli with a fake home', () => {
   }
   const base = (home: string, exec: (f: string, a: string[]) => Promise<void>) => ({
     env: { AGENTCHAT_CONNECT_HOME: home },
+    home,
     repoRoot,
     nodePath,
     exec,
@@ -325,6 +326,22 @@ describe('runCli with a fake home', () => {
     const { o, w } = io();
     expect(await runCli(['connect', 'vim'], { ...base(mk(), async () => {}), ...w })).toBe(2);
     expect(o.err).toMatch(/vim/);
+  });
+});
+
+describe('safe by construction', () => {
+  const o = { targets: ['codex'] as Target[], repoRoot, home: '/fake/home', nodePath, dshProfiles: [] as string[] };
+  it('planConnect and planDisconnect throw at plan time without an exec', () => {
+    expect(() => planConnect(o as never)).toThrow(/exec/);
+    expect(() => planDisconnect(o as never)).toThrow(/exec/);
+  });
+
+  const full = () => ({ exec: async () => {}, home: mk(), env: {}, repoRoot, nodePath, which: () => true, out: () => {}, err: () => {} });
+  it.each(['exec', 'home', 'env'])('runCli throws without %s and does nothing', async (missing) => {
+    const cli: Record<string, unknown> = full();
+    delete cli[missing];
+    await expect(runCli(['connect'], cli as never)).rejects.toThrow(new RegExp(missing));
+    await expect(runCli(['connect'], undefined as never)).rejects.toThrow();
   });
 });
 
@@ -466,6 +483,7 @@ describe('codex config backup and atomic write', () => {
       home: '/nowhere',
       repoRoot,
       nodePath,
+      exec: async () => {},
       which: () => true,
       out: (s) => (o.out += s),
       err: () => {},
@@ -550,7 +568,7 @@ describe('connect is re-runnable (fake executor)', () => {
 
 describe('wording and manual steps', () => {
   it('claude step does not claim the timeout is a verified global setting', () => {
-    const claude = planConnect({ targets: ['claude'], repoRoot, home: '/h', nodePath, dshProfiles: [] }).find((s) => /register/.test(s.description))!;
+    const claude = planConnect({ targets: ['claude'], repoRoot, home: '/h', nodePath, dshProfiles: [], exec: async () => {} }).find((s) => /register/.test(s.description))!;
     expect(claude.description).toMatch(/does not change Claude Code's MCP tool timeout/);
     expect(claude.description).toMatch(/believed to be controlled by the MCP_TOOL_TIMEOUT environment variable/);
     expect(claude.description).toMatch(/not been verified on this machine/);
@@ -567,7 +585,7 @@ describe('dsh file shape and line endings', () => {
     writeFileSync(file, content);
     return { home, file };
   };
-  const opts = (home: string) => ({ targets: ['dsh'] as Target[], repoRoot, home, nodePath, dshProfiles: ['web'] });
+  const opts = (home: string) => ({ targets: ['dsh'] as Target[], repoRoot, home, nodePath, dshProfiles: ['web'], exec: async () => {} });
 
   it.each([['a flow sequence', '[]\n'], ['a mapping', 'foo: bar\n'], ['a mapping after comments', '# c\n\nfoo: bar\n']])('refuses %s and changes nothing', async (_n, content) => {
     const { home, file } = setup(content);
@@ -598,7 +616,7 @@ describe('dsh file shape and line endings', () => {
 
 describe('OpenCode global config edit', () => {
   const OC = (home: string) => join(home, '.config/opencode/opencode.json');
-  const opts = (home: string) => ({ targets: ['opencode'] as Target[], repoRoot, home, nodePath, dshProfiles: [] as string[] });
+  const opts = (home: string) => ({ targets: ['opencode'] as Target[], repoRoot, home, nodePath, dshProfiles: [] as string[], exec: async () => {} });
   const run = async (fn: typeof planConnect, home: string) => {
     const notes: unknown[] = [];
     for (const s of fn(opts(home))) notes.push(await s.run());
@@ -705,7 +723,7 @@ describe('OpenCode global config edit', () => {
     const home = mk();
     const xdg = mk();
     const o = { out: '' };
-    const code = await runCli(['connect', 'opencode'], { env: { XDG_CONFIG_HOME: xdg }, home, repoRoot, nodePath, which: () => true, out: (s) => (o.out += s), err: () => {} });
+    const code = await runCli(['connect', 'opencode'], { env: { XDG_CONFIG_HOME: xdg }, home, repoRoot, nodePath, exec: async () => {}, which: () => true, out: (s) => (o.out += s), err: () => {} });
     expect(code).toBe(0);
     expect(o.out).toContain(join(xdg, 'opencode/opencode.json'));
   });
@@ -719,7 +737,7 @@ describe('writes go through symlinks', () => {
     mkdirSync(join(home, '.config/opencode'), { recursive: true });
     const link = join(home, '.config/opencode/opencode.json');
     symlinkSync(real, link);
-    for (const s of planConnect({ targets: ['opencode'], repoRoot, home, nodePath, dshProfiles: [] })) await s.run();
+    for (const s of planConnect({ targets: ['opencode'], repoRoot, home, nodePath, dshProfiles: [], exec: async () => {} })) await s.run();
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(JSON.parse(readFileSync(real, 'utf8')).mcp['agent-chat'].enabled).toBe(true);
   });
@@ -732,7 +750,7 @@ describe('writes go through symlinks', () => {
     writeFileSync(real, '- id: x\n');
     const link = join(dir, 'cordis.patch.yml');
     symlinkSync(real, link);
-    for (const s of planConnect({ targets: ['dsh'], repoRoot, home, nodePath, dshProfiles: ['web'] })) await s.run();
+    for (const s of planConnect({ targets: ['dsh'], repoRoot, home, nodePath, dshProfiles: ['web'], exec: async () => {} })) await s.run();
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readFileSync(real, 'utf8')).toContain('# >>> agent-chat');
   });

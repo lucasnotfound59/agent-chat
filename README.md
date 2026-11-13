@@ -115,7 +115,7 @@ npm run disconnect             # 预览撤销；加 -- --apply 才真正撤销
 |---|---|---|---|
 | Codex | 先 `codex mcp remove agent-chat`（忽略失败），再 `codex mcp add`，再直接编辑 `~/.codex/config.toml`（或 `$CODEX_HOME`）把 `tool_timeout_sec` 设为 600 | `config.toml.agent-chat.bak`（只在不存在时创建，不覆盖） | `codex mcp remove agent-chat` |
 | Claude Code | `claude mcp remove -s user agent-chat`（忽略失败），再 `claude mcp add -s user`，由 `claude` 自己改 `~/.claude.json` | 没有备份 | `claude mcp remove -s user agent-chat` |
-| OpenCode | 直接编辑全局配置（`~/.config/opencode/opencode.json`，只有 `opencode.jsonc` 存在时用它；设了 `XDG_CONFIG_HOME` 则在其下的 `opencode/`），写入 `mcp["agent-chat"] = {type: "local", command: [...], enabled: true, timeout: 600000}`，其余键原样保留，同时清掉旧的 `opencode mcp add` 留下的 `mcp.servers["agent-chat"]` | `opencode.json.agent-chat.bak`（同上，只在不存在时创建） | 只删 `mcp["agent-chat"]`（以及 `mcp.servers["agent-chat"]`），其他条目不动 |
+| OpenCode | 直接编辑全局配置（`~/.config/opencode/opencode.json`，只有 `opencode.jsonc` 存在时用它；设了 `XDG_CONFIG_HOME` 则在其下的 `opencode/`），写入 `mcp["agent-chat"] = {type: "local", command: [...], enabled: true, timeout: 600000}`，其余键原样保留，同时清掉旧的 `opencode mcp add` 留下的 `mcp.servers["agent-chat"]` | `opencode.json.agent-chat.bak`（同上，只在不存在时创建）；如果 `opencode.json` 不存在，`connect` 会新建它，没有可备份的内容 | 只删 `mcp["agent-chat"]`（以及 `mcp.servers["agent-chat"]`），其他条目不动；改动文件时同样可能创建 `.agent-chat.bak` 备份 |
 | DSH | 在每个存在的 profile（`web`、`tui`）的 `cordis.patch.yml` 里加一个 `# >>> agent-chat` 标记块 | `cordis.patch.yml.agent-chat.bak`（同上） | 删除标记块，备份保留 |
 
 OpenCode 不用 `opencode mcp add`：实测 OpenCode v2.2.6 的该命令写出 `mcp.servers.<名字>` 结构，OpenCode 并不读取，登记后 `opencode mcp list` 为空、agent 也看不到工具；`mcp["agent-chat"]` 这种写法经实测可用（`opencode mcp list` 显示 connected，默认 agent 能调用 `list_members`）。写入的 `timeout` 是 OpenCode 对 MCP 请求的超时（毫秒），它的默认值只有 5000，对 `ask` 太短。如果 OpenCode 的配置文件带注释（JSONC）或不是合法 JSON，脚本不会改它，而是报错并打印要手工加的条目。
@@ -137,6 +137,7 @@ DSH 的例外：DSH 的隔离依赖 `headless` profile 本身没有配置 MCP �
 - Claude Code 的命令行在这台机器上没有登录，涉及 Claude Code 的一切（聊天调用、`--strict-mcp-config` 的隔离效果、`claude mcp add` 的登记、冒烟脚本里新增的 `complete()` 检查）都没有用真实命令行验证过。
 - Claude Code 的 MCP 工具超时是否由环境变量 `MCP_TOOL_TIMEOUT` 控制、是否会被遵守，未验证；`connect` 不改它。如果 `ask` 在 Claude Code 里提前超时，需要自己设置这个环境变量。
 - OpenCode 的"聊天时看不到 `agent-chat` 工具"用真实命令行测过：把 `agent-chat` 登记在（临时目录里的）全局配置、适配器的 `opencode.json` 放在另一个工作目录，`agentchat` agent 的工具只有 `glob grep read skill webfetch websearch`，要求它调用 `list_members` 时没有发生任何工具调用，而默认 agent 能调用（通过它的 `execute` 工具）。OpenCode 的 MCP 工具不一定出现在模型自述的工具清单里，所以自述清单本身不是可靠证据，冒烟脚本里 OpenCode 的"MCP 隔离"一步实际上是空洞的（默认 agent 也会回答 `NO_MCP_TOOLS`）；可靠的证据是上面这种"要求它真的去调用"的实测。
+  这个结论的局限：每种情况只跑了一次；探测用的是 OpenCode 的 `--standalone` 模式加临时全局配置目录，因为 OpenCode 的后台服务会忽略客户端传入的 `XDG_CONFIG_HOME`；后台服务加真实全局登记这种组合下的行为没有验证过；OpenCode 的模型自述工具清单不可靠（MCP 工具是通过 `execute` 工具调用的），所以决定性的证据是“调用尝试”的结果，而不是自述清单。
 
 ## 测试
 

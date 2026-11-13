@@ -20,7 +20,8 @@ export interface PlanOptions {
   home: string;
   nodePath: string;
   dshProfiles: string[];
-  exec?: Exec;
+  /** Required: there is deliberately no default, so nothing can reach a real agent command by accident. */
+  exec: Exec;
   /** Directory holding Codex's config.toml (CODEX_HOME); defaults to <home>/.codex. */
   codexHome?: string;
   /** Directory holding OpenCode's global config (XDG_CONFIG_HOME/opencode); defaults to <home>/.config/opencode. */
@@ -35,7 +36,8 @@ const BAK = '.agent-chat.bak';
 
 export const ALL_TARGETS: Target[] = ['codex', 'claude', 'opencode', 'dsh'];
 
-const defaultExec: Exec = (file, args) =>
+/** The one real executor; only the script's entry point may pass it in. */
+export const defaultExec: Exec = (file, args) =>
   new Promise((ok, fail) => {
     execFile(file, args, { timeout: 60_000 }, (err, stdout, stderr) => {
       if (!err) return ok(String(stdout));
@@ -171,8 +173,13 @@ function removeStep(target: Target, description: string, file: string, args: str
   };
 }
 
+function requireExec(exec: Exec | undefined): Exec {
+  if (typeof exec !== 'function') throw new Error('planConnect/planDisconnect need an explicit `exec`; there is no default executor');
+  return exec;
+}
+
 export function planConnect(o: PlanOptions): Step[] {
-  const exec = o.exec ?? defaultExec;
+  const exec = requireExec(o.exec);
   const steps: Step[] = [];
   for (const target of o.targets) {
     const cmd = serverCommand(o, target);
@@ -279,7 +286,7 @@ export function planConnect(o: PlanOptions): Step[] {
 }
 
 export function planDisconnect(o: PlanOptions): Step[] {
-  const exec = o.exec ?? defaultExec;
+  const exec = requireExec(o.exec);
   const steps: Step[] = [];
   for (const target of o.targets) {
     if (target === 'codex') {
@@ -579,11 +586,12 @@ export function setCodexToolTimeout(toml: string, server: string, seconds: numbe
 // ---------------------------------------------------------------- command line
 
 export interface CliOptions {
-  env?: Record<string, string | undefined>;
+  /** Required, like `home` and `exec`: runCli never falls back to process.env, homedir() or a real executor. */
+  env: Record<string, string | undefined>;
   repoRoot?: string;
   nodePath?: string;
-  home?: string;
-  exec?: Exec;
+  home: string;
+  exec: Exec;
   which?: (cmd: string) => boolean;
   out?: (s: string) => void;
   err?: (s: string) => void;
@@ -602,8 +610,11 @@ function onPath(cmd: string, pathVar: string | undefined): boolean {
   return false;
 }
 
-export async function runCli(argv: string[], cli: CliOptions = {}): Promise<number> {
-  const env = cli.env ?? process.env;
+export async function runCli(argv: string[], cli: CliOptions): Promise<number> {
+  for (const k of ['exec', 'home', 'env'] as const) {
+    if (cli?.[k] === undefined || cli[k] === null) throw new Error(`runCli needs an explicit \`${k}\`; there is no default`);
+  }
+  const env = cli.env;
   const out = cli.out ?? ((s: string) => void process.stdout.write(s));
   const err = cli.err ?? ((s: string) => void process.stderr.write(s));
   const [mode, ...rest] = argv;
@@ -621,7 +632,7 @@ export async function runCli(argv: string[], cli: CliOptions = {}): Promise<numb
   const requested = (named.length ? ALL_TARGETS.filter((t) => named.includes(t)) : ALL_TARGETS) as Target[];
 
   const fakeHome = env.AGENTCHAT_CONNECT_HOME !== undefined && env.AGENTCHAT_CONNECT_HOME !== '';
-  const home = fakeHome ? (env.AGENTCHAT_CONNECT_HOME as string) : (cli.home ?? homedir());
+  const home = fakeHome ? (env.AGENTCHAT_CONNECT_HOME as string) : cli.home;
   const repoRoot = cli.repoRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
   if (!cli.repoRoot && !existsSync(join(repoRoot, 'node_modules/tsx/dist/loader.mjs'))) {
     err(`tsx loader not found under ${repoRoot}/node_modules; run npm install first\n`);
@@ -674,5 +685,6 @@ export async function runCli(argv: string[], cli: CliOptions = {}): Promise<numb
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = await runCli(process.argv.slice(2));
+  // The only place the real executor, home directory and environment are supplied.
+  process.exitCode = await runCli(process.argv.slice(2), { exec: defaultExec, home: homedir(), env: process.env });
 }
