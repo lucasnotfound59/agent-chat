@@ -141,6 +141,8 @@ codex exec -c 'mcp_servers.agent-chat.default_tools_approval_mode="approve"' ...
 
 或者在 `~/.codex/config.toml` 的 `[mcp_servers.agent-chat]` 表里加一行 `default_tools_approval_mode = "approve"`。交互式的 Codex 预期会弹出审批询问而不需要这个键，但这一点没有验证过。
 
+在脚本或其他程序里（标准输入不是终端且没有关闭）运行 `codex exec` 时，要加 `< /dev/null`，否则它会打印 "Reading additional input from stdin..." 然后一直等下去（实测）。
+
 ### 隔离
 
 聊天中的 agent 一律只读，并且关闭所有 MCP 服务、插件和连接器，所以被提问的 agent 看不到上面的两个工具，不会互相无限递归。具体做法：Codex 用 `--ignore-user-config --disable apps --disable plugins`；Claude Code 用 `--strict-mcp-config`；OpenCode 用自己定义的 `agentchat` agent，只允许 read、grep、glob、webfetch、websearch，其余全部拒绝；DSH 用 `headless` profile。中枢启动的每个子进程还带环境变量 `AGENTCHAT_INVOCATION=1`，MCP 服务看到它就不提供任何工具；但这一层只是尽力而为：agent 软件不一定把环境变量转给它启动的 MCP 服务（Codex 和 DSH 没有验证过）。各软件自己的 MCP 隔离这一层：只有 Codex 和 OpenCode 用真实命令行观察到有效（限于上面已列出的条件）；DSH 的隔离只依赖 `headless` profile 里没有 MCP 条目（它的冒烟检查在这台机器上通过，但只能说明这一点）；Claude Code 完全没有验证。
@@ -151,7 +153,8 @@ DSH 的例外：DSH 的隔离完全依赖你没有往 `headless` profile 里加�
 
 ### 尚未验证的部分
 
-- 真实的 `connect --apply` 从未对真实的 Codex、Claude Code、DSH 运行过：Codex 那次实测是用每次调用的 `-c` 覆盖把 MCP 服务接上去的，没有经过 `connect`；OpenCode 只在临时配置目录里试过条目的形状。第一次真实运行就是测试：运行前先把相关配置文件（`~/.codex/config.toml`、`~/.claude.json`、OpenCode 的全局配置、DSH 的 `cordis.patch.yml`）自己复制一份，运行后再和 `.agent-chat.bak`（以及你的复制）对比；建议一次只登记一个目标。
+- 真实的 `connect --apply` 只对 Codex 运行过（2026-11-13，codex-cli 0.167.0，`npm run connect -- --apply codex`），从未对真实的 Claude Code、OpenCode、DSH 运行过；OpenCode 只在临时配置目录里试过条目的形状。没跑过的目标，第一次真实运行就是测试：运行前先把相关配置文件（`~/.claude.json`、OpenCode 的全局配置、DSH 的 `cordis.patch.yml`）自己复制一份，运行后再和 `.agent-chat.bak`（以及你的复制）对比；建议一次只登记一个目标。
+- Codex 那次真实登记观察到的：4 步全部成功；`.agent-chat.bak` 与事先的复制逐字节相同；新增的只有 `[mcp_servers.agent-chat]`（`command`、`args`、`tool_timeout_sec = 600`）。但 `codex mcp add` 会重写整个 `[mcp_servers]` 部分，已有的其他条目被改了格式：去掉等于默认值的键（`enabled = true`、`args = []`）、整数变成浮点数（`120` 变成 `120.0`）、`env` 里的键换了顺序；用 TOML 解析器逐项对比，内容等价；文件里的注释保留。登记后中枢在 4317 端口运行，只带单次审批覆盖的 `codex exec` 通过登记的条目成功调用了 `list_members` 和 `ask`（问 OpenCode，中枢记一次唤起，没有反向提问）。只跑了一次；交互式 Codex、`disconnect --apply`、重复运行 `connect` 都没有在真实配置上试过。
 - 在中枢里运行 DSH 时，观察到 `~/.dsh/profiles/headless/cordis.patch.yml` 的修改时间变了（大小没变）。本仓库里没有任何代码写那个文件（中枢用 `--patch` 从自己的数据目录传模型覆盖），看起来是 DSH 自己改的，但没有证实。
 - Claude Code 的命令行在这台机器上没有登录，涉及 Claude Code 的一切（聊天调用、`--strict-mcp-config` 的隔离效果、`claude mcp add` 的登记、冒烟脚本里新增的 `complete()` 检查）都没有用真实命令行验证过。
 - Claude Code 的 MCP 工具超时是否由环境变量 `MCP_TOOL_TIMEOUT` 控制、是否会被遵守，未验证；`connect` 不改它。如果 `ask` 在 Claude Code 里提前超时，需要自己设置这个环境变量。
