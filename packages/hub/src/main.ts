@@ -10,8 +10,9 @@ import {
   killAllProcessGroups,
   liveProcessCount,
 } from '@agent-chat/adapters';
-import type { AgentAdapter, Availability } from '@agent-chat/adapters';
+import type { AgentAdapter } from '@agent-chat/adapters';
 import { AskService } from './ask';
+import { AvailabilityMonitor } from './availability';
 import { seed } from './bootstrap';
 import { ConfigStore } from './config';
 import { parsePort } from './env';
@@ -54,15 +55,8 @@ const adapterList: AgentAdapter[] = [
   new DshAdapter({ patchPath: dshPatchPath }),
 ];
 const adapters = new Map(adapterList.map((a) => [a.name, a]));
-const availability = new Map<string, Availability>();
-
-async function refreshAvailability(): Promise<void> {
-  await Promise.all(
-    adapterList.map(async (a) => {
-      availability.set(a.name, await a.check().catch(() => ({ ok: false, reason: '检查失败' })));
-    }),
-  );
-}
+const monitor = new AvailabilityMonitor(adapterList, (e) => bus.emit(e));
+const availability = monitor.map;
 
 seed(store, adapterList);
 const interrupted = store.markUnfinishedInterrupted();
@@ -92,10 +86,10 @@ const ask = new AskService({
   availabilityReason: (n) => availability.get(n)?.reason ?? '尚未检查',
   emit: (e) => bus.emit(e),
 });
-const app = buildServer({ store, scheduler, config, token: () => token, bus, availability, ask });
+const app = buildServer({ store, scheduler, config, token: () => token, bus, availability, ask, refreshAvailability: () => monitor.refresh() });
 
-await refreshAvailability();
-setInterval(() => void refreshAvailability(), 60000).unref();
+await monitor.refresh();
+setInterval(() => void monitor.refresh(), 60000).unref();
 await app.listen({ port, host: '127.0.0.1' });
 
 console.log(`Agent Chat hub: http://127.0.0.1:${port}`);

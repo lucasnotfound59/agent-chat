@@ -1,3 +1,5 @@
+import type { Availability } from '@agent-chat/adapters';
+
 export type MemberKind = 'human' | 'agent';
 
 export interface Member {
@@ -69,4 +71,5 @@ export type HubEvent =
   | { type: 'message'; message: Message }
   | { type: 'typing'; conversationId: string; memberId: string; active: boolean }
   | { type: 'conversation'; conversation: Conversation }
-  | { type: 'stopped'; stopped: boolean };
+  | { type: 'stopped'; stopped: boolean }
+  | { type: 'availability'; adapter: string; availability: Availability };

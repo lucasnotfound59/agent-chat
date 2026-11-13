@@ -38,6 +38,8 @@ export interface ServerDeps {
   bus: Bus;
   availability: Map<string, Availability>;
   ask: AskService;
+  /** Re-checks every adapter (the hub's AvailabilityMonitor.refresh). */
+  refreshAvailability: () => Promise<void>;
 }
 
 const ASK_STATUS: Record<AskErrorCode, number> = {
@@ -276,6 +278,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     } finally {
       finished = true;
     }
+  });
+
+  app.post('/api/availability/refresh', async () => {
+    await deps.refreshAvailability();
+    return Object.fromEntries(availability);
   });
 
   app.post('/api/stop', async () => {

@@ -15,7 +15,8 @@ mkdirSync(join(root, '.config'));
 mkdirSync(join(root, '.codex'));
 writeFileSync(log, '');
 // `security` is the macOS keychain CLI the hub's token store shells out to.
-for (const name of ['codex', 'claude', 'opencode', 'dsh', 'security']) {
+// `open` launches the default browser; the hub calls it on start-up.
+for (const name of ['codex', 'claude', 'opencode', 'dsh', 'security', 'open']) {
   const p = join(shimDir, name);
   writeFileSync(p, `#!/bin/sh\necho "${name} $*" >> '${log}'\necho "SHIM CALLED: ${name}" >&2\nexit 97\n`);
   chmodSync(p, 0o755);

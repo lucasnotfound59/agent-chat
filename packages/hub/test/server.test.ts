@@ -26,6 +26,7 @@ let fa: FakeAdapter;
 let fb: FakeAdapter;
 let dataDir: string;
 let auth: { authorization: string };
+let refreshCalls = 0;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until<T>(fn: () => T | undefined | false, ms = 2000): Promise<T> {
@@ -39,6 +40,7 @@ async function until<T>(fn: () => T | undefined | false, ms = 2000): Promise<T> 
 }
 
 beforeEach(() => {
+  refreshCalls = 0;
   dataDir = mkdtempSync(join(tmpdir(), 'agentchat-srv-'));
   store = new Store(':memory:');
   config = new ConfigStore(dataDir);
@@ -70,7 +72,18 @@ beforeEach(() => {
     availabilityReason: (n) => availability.get(n)?.reason,
     emit: (e) => bus.emit(e),
   });
-  app = buildServer({ store, scheduler, config, token: () => tokenStore.get()!, bus, availability, ask });
+  app = buildServer({
+    store,
+    scheduler,
+    config,
+    token: () => tokenStore.get()!,
+    bus,
+    availability,
+    ask,
+    refreshAvailability: async () => {
+      refreshCalls++;
+    },
+  });
   auth = { authorization: `Bearer ${token}` };
 });
 
@@ -296,6 +309,14 @@ describe('settings, stop and config', () => {
     const a = s.members.find((m: any) => m.name === 'A');
     const res = await app.inject({ method: 'PATCH', url: `/api/members/${a.id}`, headers: auth, payload: { bio: '新介绍' } });
     expect(res.json().bio).toBe('新介绍');
+  });
+
+  it('POST /api/availability/refresh re-checks and returns every adapter', async () => {
+    expect((await app.inject({ method: 'POST', url: '/api/availability/refresh' })).statusCode).toBe(401);
+    const r = await app.inject({ method: 'POST', url: '/api/availability/refresh', headers: auth });
+    expect(r.statusCode).toBe(200);
+    expect(refreshCalls).toBe(1);
+    expect(r.json()).toEqual({ 'fake-a': { ok: true }, 'fake-b': { ok: false, reason: '未登录' } });
   });
 });
 
