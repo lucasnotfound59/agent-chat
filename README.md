@@ -100,9 +100,9 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/conversations/$CONV/message
 agent 在自己的软件里干活时，可以通过 MCP 服务向聊天里的其他 agent 提问。MCP 服务（`packages/mcp`）提供两个工具：
 
 - `list_members`：列出可以提问的成员及其简介、是否可用；
-- `ask`：向某个成员提问并等待回答（回答可能要一到两分钟，提问超时沿用会话设置 `timeoutMs`，默认 300000 毫秒）。
+- `ask`：向某个成员提问并等待回答（回答可能要一到两分钟，等回答的超时沿用会话设置 `timeoutMs`，默认 300000 毫秒）。
 
-使用前必须先启动中枢（`npm run hub`），否则工具会提示中枢没有运行。`ask` 最长等 600 秒；`list_members` 最长等 30 秒。
+使用前必须先启动中枢（`npm run hub`），否则工具会提示中枢没有运行。MCP 客户端对 `ask` 总共最多等 600 秒，所以 `timeoutMs` 超过 600 秒（或者排队很久）时会被客户端提前截断；`list_members` 最长等 30 秒。
 
 登记的限制：登记内容里写死了本仓库的路径、当前 Node 的路径和默认端口 4317（`connect` 不写 `AGENTCHAT_PORT`）。移动仓库、切换 Node 版本后需要重新运行 `connect`；中枢改用其他端口时，已登记的软件连不上，目前不支持。macOS 可能禁止图形界面的软件访问 `~/Documents`，只在终端里的 Codex 试过，图形界面的软件没有试过。
 
@@ -131,7 +131,7 @@ OpenCode 不用 `opencode mcp add`：实测 OpenCode v2.2.6 的该命令写出 `
 
 令牌持有者的权限：持有令牌的人可以调用每一个接口，包括以任何 agent 的名义调用 `/api/ask`、以你的身份发消息、修改每日唤起上限。所以防递归的措施和上限都管不住令牌持有者（DSH 的沙箱读得到钥匙串，所以这一点相关）。
 
-重新运行 `connect` 会先删除再重新添加 Codex 的条目，你手工加在这个表里的键都会丢失（包括下面的自动批准键）。
+重新运行 `connect` 会先删除再重新添加 Codex 的条目，你手工加在这个表里的键预期会丢失（包括下面的自动批准键）；这是先删除再添加的预期效果，没有实际观察过。
 
 Codex 的工具审批：非交互的 `codex exec` 会拒绝 MCP 工具调用（报 "approval policy is never"），除非设置了 `mcp_servers.agent-chat.default_tools_approval_mode = "approve"`。`connect` 有意不写这个自动批准的键。需要时自己加：单次运行用
 
@@ -139,11 +139,11 @@ Codex 的工具审批：非交互的 `codex exec` 会拒绝 MCP 工具调用（�
 codex exec -c 'mcp_servers.agent-chat.default_tools_approval_mode="approve"' ...
 ```
 
-或者在 `~/.codex/config.toml` 的 `[mcp_servers.agent-chat]` 表里加一行 `default_tools_approval_mode = "approve"`。交互式的 Codex 不需要，它会弹出审批询问。
+或者在 `~/.codex/config.toml` 的 `[mcp_servers.agent-chat]` 表里加一行 `default_tools_approval_mode = "approve"`。交互式的 Codex 预期会弹出审批询问而不需要这个键，但这一点没有验证过。
 
 ### 隔离
 
-聊天中的 agent 一律只读，并且关闭所有 MCP 服务、插件和连接器，所以被提问的 agent 看不到上面的两个工具，不会互相无限递归。具体做法：Codex 用 `--ignore-user-config --disable apps --disable plugins`；Claude Code 用 `--strict-mcp-config`；OpenCode 用自己定义的 `agentchat` agent，只允许 read、grep、glob、webfetch、websearch，其余全部拒绝；DSH 用 `headless` profile。中枢启动的每个子进程还带环境变量 `AGENTCHAT_INVOCATION=1`，MCP 服务看到它就不提供任何工具；但这一层只是尽力而为：agent 软件不一定把环境变量转给它启动的 MCP 服务（Codex 和 DSH 没有验证过）。实测证明有效的是各软件自己的 MCP 隔离这一层。
+聊天中的 agent 一律只读，并且关闭所有 MCP 服务、插件和连接器，所以被提问的 agent 看不到上面的两个工具，不会互相无限递归。具体做法：Codex 用 `--ignore-user-config --disable apps --disable plugins`；Claude Code 用 `--strict-mcp-config`；OpenCode 用自己定义的 `agentchat` agent，只允许 read、grep、glob、webfetch、websearch，其余全部拒绝；DSH 用 `headless` profile。中枢启动的每个子进程还带环境变量 `AGENTCHAT_INVOCATION=1`，MCP 服务看到它就不提供任何工具；但这一层只是尽力而为：agent 软件不一定把环境变量转给它启动的 MCP 服务（Codex 和 DSH 没有验证过）。各软件自己的 MCP 隔离这一层：只有 Codex 和 OpenCode 用真实命令行观察到有效（限于上面已列出的条件）；DSH 的隔离只依赖 `headless` profile 里没有 MCP 条目（它的冒烟检查在这台机器上通过，但只能说明这一点）；Claude Code 完全没有验证。
 
 DSH 的例外：DSH 的隔离完全依赖你没有往 `headless` profile 里加过 MCP 服务（`headless` profile 本身没有配置 MCP 服务），`connect` 不会往 `headless` 里写。如果你自己在 `headless` profile 里配了 MCP 服务，聊天时它们会被加载。
 

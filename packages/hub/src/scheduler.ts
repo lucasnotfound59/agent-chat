@@ -213,7 +213,8 @@ export class Scheduler {
     const triage = this.deps.triage();
     if (!triage || rest.length === 0) return mentioned;
     // A capped conversation invokes nobody, so a triage call would be paid for and thrown away.
-    if (this.isCapped(conv)) return mentioned;
+    // underDailyCap posts the once-per-day cap notice, so the user's message is not silently ignored.
+    if (!this.underDailyCap(conv, this.state(conv.id))) return mentioned;
 
     const nameOf = (id: string | null) => members.find((m) => m.id === id)?.name ?? '系统';
     const transcript = this.deps.store
@@ -246,12 +247,6 @@ export class Scheduler {
       // logging must never break a round
     }
     return [...mentioned, ...picked];
-  }
-
-  private isCapped(conv: Conversation): boolean {
-    const dayStart = new Date();
-    dayStart.setHours(0, 0, 0, 0);
-    return this.deps.store.countInvocationsSince(conv.id, dayStart.getTime()) >= conv.settings.dailyInvocationCap;
   }
 
   private underDailyCap(conv: Conversation, st: ConvState): boolean {

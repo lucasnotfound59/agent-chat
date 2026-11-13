@@ -56,6 +56,23 @@ describe('triage versus cap, stop and logging', () => {
     expect(t.fa.calls.length + t.fb.calls.length).toBe(0);
   });
 
+  it('capped at round start with triage on: exactly one cap notice, no triage, nobody invoked, still one on a second message', async () => {
+    const tf = new FakeAdapter('fake-t', 'T');
+    const t = setup({ triage: new AgentTriage(tf, '/w'), settings: { dailyInvocationCap: 1, maxAgentRounds: 0 } });
+    t.store.startInvocation(t.group.id, t.a.id, 'round');
+    t.say(t.group.id, '没有点名');
+    await t.settle();
+    const notices = () => t.store.listMessages(t.group.id).filter((m) => m.kind === 'system');
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0].body).toContain('上限');
+    expect(tf.completeCalls).toEqual([]);
+    expect(t.fa.calls.length + t.fb.calls.length).toBe(0);
+    t.say(t.group.id, '再说一次');
+    await t.settle();
+    expect(notices()).toHaveLength(1);
+    expect(tf.completeCalls).toEqual([]);
+  });
+
   it('a mentioned agent in a capped conversation still gets the cap notice and is not invoked', async () => {
     const t = setup({ triage: true, settings: { dailyInvocationCap: 1, maxAgentRounds: 0 } });
     t.store.startInvocation(t.group.id, t.a.id, 'round');
