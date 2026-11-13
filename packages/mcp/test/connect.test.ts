@@ -677,6 +677,28 @@ describe('OpenCode global config edit', () => {
     expect(String(notes[0])).toMatch(/already registered/);
   });
 
+  it('connect then disconnect gives back the original bytes, with no empty "mcp": {} left behind', async () => {
+    const home = mk();
+    // the shape of the real global config this was registered into
+    const original = '{\n  "$schema": "https://opencode.ai/config.json",\n  "skills": [\n    "~/.codex/skills",\n    "~/.codex/skills/.system"\n  ]\n}\n';
+    put(home, original);
+    await run(planConnect, home);
+    await run(planDisconnect, home);
+    expect(readFileSync(OC(home), 'utf8')).toBe(original);
+  });
+
+  it('disconnect keeps an "mcp" object that still holds other servers, and one that was already empty', async () => {
+    const home = mk();
+    put(home, JSON.stringify({ mcp: { other: { type: 'remote', url: 'https://x' }, 'agent-chat': entry() } }, null, 2));
+    await run(planDisconnect, home);
+    expect(JSON.parse(readFileSync(OC(home), 'utf8'))).toEqual({ mcp: { other: { type: 'remote', url: 'https://x' } } });
+    const home2 = mk();
+    const already = '{\n  "mcp": {}\n}\n';
+    put(home2, already);
+    await run(planDisconnect, home2);
+    expect(readFileSync(OC(home2), 'utf8')).toBe(already);
+  });
+
   it('replaces an outdated agent-chat entry and removes a stale mcp.servers entry left by `opencode mcp add`', async () => {
     const home = mk();
     put(home, JSON.stringify({ mcp: { 'agent-chat': { type: 'local', command: ['old'] }, servers: { 'agent-chat': { type: 'local', command: ['old'] }, keep: { type: 'local', command: ['k'] } } } }, null, 2));

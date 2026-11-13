@@ -104,7 +104,13 @@ function editOpenCodeConfig(file: string, mode: 'add' | 'remove', entry?: Record
   if (mode === 'add') {
     mcp[NAME] = entry;
     root.mcp = mcp;
-  } else delete mcp[NAME];
+  } else {
+    const had = NAME in mcp || JSON.stringify(root) !== before;
+    delete mcp[NAME];
+    // Drop an "mcp" object that only existed for us, so connect + disconnect restores the original bytes;
+    // one that was already empty, or still holds other servers, stays.
+    if (had && isObj(root.mcp) && Object.keys(root.mcp).length === 0) delete root.mcp;
+  }
   if (JSON.stringify(root) === before) return mode === 'add' ? `"${NAME}" is already registered in ${file}` : `"${NAME}" is not registered in ${file}; nothing to remove`;
   const indent = text.match(/^([ \t]+)"/m)?.[1] ?? '  ';
   const nl = text === '' || text.endsWith('\n') ? '\n' : '';
