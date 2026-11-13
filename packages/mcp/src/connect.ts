@@ -323,17 +323,23 @@ export function planDisconnect(o: PlanOptions): Step[] {
   return steps;
 }
 
+/**
+ * A patch-list entry that adds the MCP client plugin. A bare `- id: …` entry in cordis.patch.yml only
+ * overrides an entry that already exists (dsh 0.2.2-rc.1 says `patch: entry "mcp-agent-chat" not found`
+ * and ignores it), so the new plugin goes under `insert:`, like the theme row in the user's web profile.
+ */
 function dshEntry(cmd: string[]): string {
   const q = (s: string) => JSON.stringify(s); // a JSON string is a valid YAML double-quoted scalar
   return [
-    '- id: mcp-agent-chat',
-    `  name: '@deepseek-ai/dsh-mcp-client'`,
-    '  config:',
-    `    serverName: ${NAME}`,
-    '    transport: stdio',
-    `    command: ${q(cmd[0])}`,
-    `    args: [${cmd.slice(1).map(q).join(', ')}]`,
-    `    toolCallTimeoutMs: ${TOOL_TIMEOUT_SEC * 1000}`,
+    '- insert:',
+    '    - id: mcp-agent-chat',
+    `      name: '@deepseek-ai/dsh-mcp-client'`,
+    '      config:',
+    `        serverName: ${NAME}`,
+    '        transport: stdio',
+    `        command: ${q(cmd[0])}`,
+    `        args: [${cmd.slice(1).map(q).join(', ')}]`,
+    `        toolCallTimeoutMs: ${TOOL_TIMEOUT_SEC * 1000}`,
     '',
   ].join('\n');
 }
@@ -352,7 +358,8 @@ function findBlock(yaml: string): { s: number; e: number; endHadNewline: boolean
   let pos = 0;
   let s = -1;
   for (const line of lines) {
-    const t = line.trimEnd();
+    // trim both ends: a running `dsh web` was seen re-indenting the start marker to the previous entry's depth
+    const t = line.trim();
     if (s < 0 && t === START) s = pos;
     else if (s >= 0 && t === END) return { s, e: pos + line.length, endHadNewline: line.endsWith('\n') };
     pos += line.length;
@@ -361,14 +368,17 @@ function findBlock(yaml: string): { s: number; e: number; endHadNewline: boolean
   return null;
 }
 
-/** Idempotent: replaces an existing marker block in place, otherwise appends one. `entry` is the block body. */
+/**
+ * Idempotent: replaces the first marker block in place (dropping any further ones), otherwise appends one.
+ * `entry` is the block body.
+ */
 export function upsertDshEntry(yaml: string, entry: string): string {
   const eol = yaml.includes('\r\n') ? '\r\n' : '\n';
   const body = (entry.endsWith('\n') ? entry : `${entry}\n`).replace(/\r?\n/g, eol);
   const found = findBlock(yaml);
   if (found) {
     const block = `${START}${eol}${body}${END}${found.endHadNewline ? eol : ''}`;
-    return yaml.slice(0, found.s) + block + yaml.slice(found.e);
+    return yaml.slice(0, found.s) + block + removeDshEntry(yaml.slice(found.e));
   }
   // A file without a final newline gets one added before the block and no newline after the end marker,
   // which is what lets removeDshEntry restore the original bytes exactly.
@@ -376,12 +386,15 @@ export function upsertDshEntry(yaml: string, entry: string): string {
   return `${yaml}${needsNl ? eol : ''}${START}${eol}${body}${END}${needsNl ? '' : eol}`;
 }
 
+/** Removes every marker block (a re-indented marker defeated an earlier upsert and left two). */
 export function removeDshEntry(yaml: string): string {
-  const found = findBlock(yaml);
-  if (!found) return yaml;
-  let cut = found.s;
-  if (cut > 0 && !found.endHadNewline && found.e === yaml.length) cut -= yaml.slice(0, cut).endsWith('\r\n') ? 2 : 1;
-  return yaml.slice(0, cut) + yaml.slice(found.e);
+  let out = yaml;
+  for (let found = findBlock(out); found; found = findBlock(out)) {
+    let cut = found.s;
+    if (cut > 0 && !found.endHadNewline && found.e === out.length) cut -= out.slice(0, cut).endsWith('\r\n') ? 2 : 1;
+    out = out.slice(0, cut) + out.slice(found.e);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- minimal TOML line scanner

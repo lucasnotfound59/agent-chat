@@ -180,6 +180,21 @@ describe('upsertDshEntry / removeDshEntry', () => {
     }
   });
 
+  it('recognises markers that were re-indented (seen after a running dsh web reloaded the file)', () => {
+    const base = '- id: a\n  config:\n    deep:\n      k: 1\n';
+    const old = `${base}        ${START}- id: old\n${END}`;
+    const out = upsertDshEntry(old, entry);
+    expect(out).toBe(`${base}${START}${entry}${END}`);
+    expect(removeDshEntry(old)).toBe(base);
+  });
+
+  it('collapses duplicate blocks into one, and remove takes them all out', () => {
+    const base = '- id: a\n';
+    const twice = `${base}    ${START}- id: old\n${END}${START}- id: newer\n${END}`;
+    expect(upsertDshEntry(twice, entry)).toBe(`${base}${START}${entry}${END}`);
+    expect(removeDshEntry(twice)).toBe(base);
+  });
+
   it('remove is a no-op without markers', () => {
     expect(removeDshEntry('- id: a\n')).toBe('- id: a\n');
   });
@@ -205,7 +220,9 @@ describe('dsh steps on a temp home', () => {
     const once = readFileSync(file, 'utf8');
     expect(readFileSync(`${file}.agent-chat.bak`, 'utf8')).toBe(original);
     expect(once.startsWith(original)).toBe(true);
-    expect(once).toContain('# >>> agent-chat\n');
+    // DSH patch lists only override existing ids; a new plugin entry must sit under `insert:`
+    // (a bare `- id: mcp-agent-chat` makes dsh report `patch: entry "mcp-agent-chat" not found` and ignore it).
+    expect(once).toContain('# >>> agent-chat\n- insert:\n    - id: mcp-agent-chat\n      name: \'@deepseek-ai/dsh-mcp-client\'\n');
     expect(once).toContain('name: \'@deepseek-ai/dsh-mcp-client\'');
     expect(once).toContain('serverName: agent-chat');
     expect(once).toContain('toolCallTimeoutMs: 600000');
