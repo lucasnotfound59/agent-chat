@@ -53,7 +53,7 @@ function Chat({ token }: { token: string }) {
           onStop={() => void chat.stop()}
           onResume={() => void chat.resume()}
         />
-        {state.connection === 'hub_down' && (
+        {(state.connection === 'hub_down' || state.connection === 'closed') && (
           <div className="banner" role="status">
             hub 没有运行，请在终端运行 <code>npm run hub</code>，页面会自动重连。
           </div>

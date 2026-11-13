@@ -50,7 +50,13 @@ export function useChat(token: string) {
     const conn = connectHub({
       token,
       onEvent: (event) => dispatch({ type: 'event', event }),
-      onStatus: (s) => dispatch({ type: 'connection', connection: s }),
+      onStatus: (s) => {
+        const cur = stateRef.current.connection;
+        if (cur === 'unauthorized') return;
+        // A retry attempt must not hide the hub-down banner between failures.
+        if (s === 'connecting' && (cur === 'closed' || cur === 'hub_down')) return;
+        dispatch({ type: 'connection', connection: s });
+      },
       onReady: () => void resync(),
       onUnauthorized: () => {
         forgetToken();
