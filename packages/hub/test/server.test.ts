@@ -418,6 +418,19 @@ describe('ask routes', () => {
     expect((await post(good)).statusCode).toBe(429);
   });
 
+  it('retry answers started:false with a reason when the scheduler would refuse', async () => {
+    const retry = (id: string) => app.inject({ method: 'POST', url: `/api/invocations/${id}/retry`, headers: auth });
+    expect((await retry('nope')).json()).toEqual({ started: false, reason: 'not_found' });
+    fa.handler = async () => {
+      throw new AdapterError('crashed', 'boom');
+    };
+    expect((await post(good)).statusCode).toBe(502);
+    const conv = store.listConversations().find((c) => c.kind === 'ask')!;
+    const invocationId = store.listMessages(conv.id).find((m) => m.kind === 'system')!.meta!.invocationId as string;
+    // an ask invocation is never retried through the round scheduler, so the route must not claim it started
+    expect((await retry(invocationId)).json()).toEqual({ started: false, reason: 'ask' });
+  });
+
   it('lists members with availability', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/members', headers: auth });
     expect(r.json()).toEqual([

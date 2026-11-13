@@ -51,6 +51,8 @@ type Execution =
   | { kind: 'silent' }
   | { kind: 'timeout' | 'error' | 'aborted'; message: string };
 
+export type RetryRefusal = 'not_found' | 'stopped' | 'ask' | 'paused' | 'running';
+
 export class Scheduler {
   private readonly states = new Map<string, ConvState>();
   private stopped = false;
@@ -101,14 +103,26 @@ export class Scheduler {
     for (const c of this.deps.store.listConversations()) if (c.kind !== 'ask') this.kick(c.id);
   }
 
-  async retryInvocation(invocationId: string): Promise<boolean> {
+  /** Why `retryInvocation` would refuse right now, or null when it would start. Synchronous, so a route can answer honestly. */
+  retryRefusal(invocationId: string): RetryRefusal | null {
     const inv = this.deps.store.getInvocation(invocationId);
-    if (!inv || this.stopped) return false;
+    if (!inv) return 'not_found';
+    if (this.stopped) return 'stopped';
     const conv = this.deps.store.getConversation(inv.conversationId);
     const agent = this.deps.store.getMember(inv.memberId);
-    if (!conv || !agent || conv.kind === 'ask' || conv.settings.paused) return false;
+    if (!conv || !agent) return 'not_found';
+    if (conv.kind === 'ask') return 'ask';
+    if (conv.settings.paused) return 'paused';
+    if (this.states.get(conv.id)?.running) return 'running';
+    return null;
+  }
+
+  async retryInvocation(invocationId: string): Promise<boolean> {
+    if (this.retryRefusal(invocationId) !== null) return false;
+    const inv = this.deps.store.getInvocation(invocationId)!;
+    const conv = this.deps.store.getConversation(inv.conversationId)!;
+    const agent = this.deps.store.getMember(inv.memberId)!;
     const st = this.state(conv.id);
-    if (st.running) return false;
     st.running = true;
     st.abort = new AbortController();
     try {

@@ -289,11 +289,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   app.post<{ Params: { id: string } }>('/api/invocations/:id/retry', async (req) => {
-    const inv = store.getInvocation(req.params.id);
-    if (!inv) return { started: false };
+    const reason = scheduler.retryRefusal(req.params.id);
+    if (reason) return { started: false, reason };
     // Runs in the background; the outcome arrives as message events.
-    const started = scheduler.retryInvocation(req.params.id);
-    void started.catch(() => {});
+    void scheduler.retryInvocation(req.params.id).catch(() => {});
     return { started: true };
   });
 
