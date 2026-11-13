@@ -14,6 +14,7 @@ import type { AgentAdapter, Availability } from '@agent-chat/adapters';
 import { AskService } from './ask';
 import { seed } from './bootstrap';
 import { ConfigStore } from './config';
+import { parsePort } from './env';
 import { Scheduler } from './scheduler';
 import { Bus, buildServer } from './server';
 import { Store } from './store';
@@ -21,7 +22,13 @@ import { KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE, KeychainTokenStore, ensureToken } f
 import { createAgentTriage, pickTriageAdapter } from './triage';
 
 const dataDir = process.env.AGENTCHAT_DATA_DIR ?? join(homedir(), 'Library', 'Application Support', 'AgentChat');
-const port = Number(process.env.AGENTCHAT_PORT ?? 4317);
+let port: number;
+try {
+  port = parsePort(process.env.AGENTCHAT_PORT);
+} catch (e) {
+  console.error((e as Error).message);
+  process.exit(2);
+}
 
 mkdirSync(dataDir, { recursive: true });
 const config = new ConfigStore(dataDir);
