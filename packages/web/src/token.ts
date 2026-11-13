@@ -14,14 +14,21 @@ function browserEnv(): TokenEnv {
 export function takeToken(env: TokenEnv = browserEnv()): string | null {
   const m = /(?:^#|&)token=([^&]+)/.exec(env.location.hash);
   if (m) {
-    const token = decodeURIComponent(m[1]);
+    let token: string | null = null;
     try {
-      env.storage.setItem(TOKEN_KEY, token);
+      token = decodeURIComponent(m[1]);
     } catch {
-      // storage may be blocked; the token still works for this page load
+      // malformed escape: ignore the fragment, but still wipe it below
+    }
+    if (token !== null) {
+      try {
+        env.storage.setItem(TOKEN_KEY, token);
+      } catch {
+        // storage may be blocked; the token still works for this page load
+      }
     }
     env.history.replaceState(null, '', env.location.pathname + env.location.search);
-    return token;
+    if (token !== null) return token;
   }
   try {
     return env.storage.getItem(TOKEN_KEY);

@@ -226,6 +226,25 @@ describe('pause', () => {
     expect(t.fa.calls).toHaveLength(1);
   });
 
+  it('a pause resumed before the aborted adapter settles still asks the question again', async () => {
+    const t = setup();
+    // Rejects only 50ms after the abort, so the user can resume first.
+    t.fa.handler = (req) =>
+      new Promise<InvokeResult>((_, reject) => {
+        req.signal.addEventListener('abort', () => setTimeout(() => reject(new AdapterError('aborted', 'aborted')), 50));
+      });
+    t.say(t.dm.id, 'hi');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(t.fa.calls).toHaveLength(1);
+    t.store.updateSettings(t.dm.id, { paused: true });
+    t.scheduler.abortConversation(t.dm.id, 'pause');
+    t.store.updateSettings(t.dm.id, { paused: false });
+    t.scheduler.kick(t.dm.id);
+    t.fa.handler = async () => ({ kind: 'reply', body: 'ok', harnessSessionId: 's' });
+    await t.settle();
+    expect(t.fa.calls).toHaveLength(2);
+  });
+
   it('abortConversation interrupts a running invocation', async () => {
     const t = setup();
     t.fa.handler = hang;
@@ -418,7 +437,7 @@ describe('an interrupted round does not lose the question', () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(t.fa.calls).toHaveLength(1);
     t.store.updateSettings(t.dm.id, { paused: true });
-    t.scheduler.abortConversation(t.dm.id);
+    t.scheduler.abortConversation(t.dm.id, 'pause');
     await t.settle();
     t.fa.handler = answer;
     t.store.updateSettings(t.dm.id, { paused: false });

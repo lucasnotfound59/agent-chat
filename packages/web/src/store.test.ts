@@ -66,6 +66,14 @@ describe('reduce', () => {
     expect(s.typing.dm1).toEqual([]);
   });
 
+  it('clears typing when state is reloaded (a missed typing-off must not stick)', () => {
+    let s = loaded();
+    s = reduce(s, { type: 'event', event: { type: 'typing', conversationId: 'dm1', memberId: 'a', active: true } });
+    expect(s.typing.dm1).toEqual(['a']);
+    s = reduce(s, { type: 'state', state: { me, members: [me, alpha], conversations: [], stopped: false } });
+    expect(s.typing).toEqual({});
+  });
+
   it('upserts conversations, sets stopped and updates availability', () => {
     let s = loaded();
     s = reduce(s, { type: 'event', event: { type: 'conversation', conversation: conv('g2', 'group', 9) } });

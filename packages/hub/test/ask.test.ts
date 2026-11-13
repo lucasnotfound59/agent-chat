@@ -359,6 +359,17 @@ describe('a human message in an ask conversation', () => {
     expect(t.store.listMessages(conv.id).at(-1)).toMatchObject({ kind: 'system', body: '已全局停止，这条消息没有被处理。' });
   });
 
+  it('does not invoke an unavailable answerer and says so', async () => {
+    const t = make();
+    await t.ask({});
+    const conv = t.askConvs()[0];
+    t.unavailable.add('fake-a');
+    const m = t.store.addMessage({ conversationId: conv.id, senderId: t.human.id, body: '在吗' });
+    await t.scheduler.answerInAsk(m);
+    expect(t.fa.calls).toHaveLength(1);
+    expect(t.store.listMessages(conv.id).at(-1)).toMatchObject({ kind: 'system', body: 'A 现在不可用，这条消息没有被处理。' });
+  });
+
   it('explains a silent answerer', async () => {
     const t = make();
     await t.ask({});

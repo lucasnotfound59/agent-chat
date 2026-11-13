@@ -49,4 +49,12 @@ describe('Composer', () => {
     fireEvent.keyDown(box(), { key: 'Enter', isComposing: true });
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it('does not send on the Safari composition-ending Enter (keyCode 229)', () => {
+    const onSend = vi.fn();
+    render(<Composer candidates={[]} onSend={onSend} />);
+    fireEvent.change(box(), { target: { value: 'ni' } });
+    fireEvent.keyDown(box(), { key: 'Enter', keyCode: 229 });
+    expect(onSend).not.toHaveBeenCalled();
+  });
 });

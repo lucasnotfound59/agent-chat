@@ -13,6 +13,11 @@ export function useChat(token: string) {
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  /** An API call just succeeded, so the hub is reachable: clear an HTTP-set hub_down (never unauthorized). */
+  const reachable = useCallback(() => {
+    if (stateRef.current.connection === 'hub_down') dispatch({ type: 'connection', connection: 'open' });
+  }, []);
+
   /** Handles errors every action shares; returns true when it did. */
   const handled = useCallback((e: unknown): boolean => {
     if (e instanceof UnauthorizedError) {
@@ -30,21 +35,24 @@ export function useChat(token: string) {
   const loadLatest = useCallback(
     async (id: string) => {
       const messages = await api.messages(id);
+      reachable();
       dispatch({ type: 'messages', conversationId: id, messages, older: false });
     },
-    [api],
+    [api, reachable],
   );
 
   // After every (re)connect: reload state and the open conversation so nothing missed stays missing.
   const resync = useCallback(async () => {
     try {
-      dispatch({ type: 'state', state: await api.state() });
+      const fresh = await api.state();
+      reachable();
+      dispatch({ type: 'state', state: fresh });
       const id = activeRef.current;
       if (id) await loadLatest(id);
     } catch (e) {
       handled(e);
     }
-  }, [api, loadLatest, handled]);
+  }, [api, loadLatest, handled, reachable]);
 
   useEffect(() => {
     const conn = connectHub({
@@ -79,11 +87,13 @@ export function useChat(token: string) {
     const first = id ? stateRef.current.messages[id]?.[0] : undefined;
     if (!id || !first) return;
     try {
-      dispatch({ type: 'messages', conversationId: id, messages: await api.messages(id, first.seq), older: true });
+      const older = await api.messages(id, first.seq);
+      reachable();
+      dispatch({ type: 'messages', conversationId: id, messages: older, older: true });
     } catch (e) {
       if (!handled(e)) throw e;
     }
-  }, [api, handled]);
+  }, [api, handled, reachable]);
 
   /** Errors reach the caller (the composer shows them); the message itself arrives over the websocket. */
   const send = useCallback(
@@ -92,18 +102,20 @@ export function useChat(token: string) {
       if (!id) return;
       try {
         await api.send(id, body);
+        reachable();
       } catch (e) {
         handled(e);
         throw e;
       }
     },
-    [api, handled],
+    [api, handled, reachable],
   );
 
   const createGroup = useCallback(
     async (title: string, memberIds: string[]) => {
       try {
         const conversation = await api.createGroup(title, memberIds);
+        reachable();
         dispatch({ type: 'event', event: { type: 'conversation', conversation } });
         select(conversation.id);
       } catch (e) {
@@ -111,7 +123,7 @@ export function useChat(token: string) {
         throw e;
       }
     },
-    [api, select, handled],
+    [api, select, handled, reachable],
   );
 
   const togglePause = useCallback(async () => {
@@ -119,34 +131,37 @@ export function useChat(token: string) {
     if (!conv) return;
     try {
       const conversation = await api.setPaused(conv.id, !conv.settings.paused);
+      reachable();
       dispatch({ type: 'event', event: { type: 'conversation', conversation } });
     } catch (e) {
       handled(e);
     }
-  }, [api, handled]);
+  }, [api, handled, reachable]);
 
   const setStopped = useCallback(
     async (stop: boolean) => {
       try {
         const r = stop ? await api.stop() : await api.resume();
+        reachable();
         dispatch({ type: 'event', event: { type: 'stopped', stopped: r.stopped } });
       } catch (e) {
         handled(e);
       }
     },
-    [api, handled],
+    [api, handled, reachable],
   );
 
   const refreshAvailability = useCallback(async () => {
     try {
       const all = await api.refreshAvailability();
+      reachable();
       for (const [adapter, availability] of Object.entries(all)) {
         dispatch({ type: 'event', event: { type: 'availability', adapter, availability } });
       }
     } catch (e) {
       handled(e);
     }
-  }, [api, handled]);
+  }, [api, handled, reachable]);
 
   return {
     state,

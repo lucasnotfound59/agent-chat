@@ -37,6 +37,8 @@ interface ConvState {
   lastProcessedSeq: number;
   abort: AbortController | null;
   capNoticeDay: string | null;
+  /** Why the current round was aborted, recorded at abort time (the pause may be undone before the adapter settles). */
+  interruptedBy: 'pause' | 'stop' | null;
 }
 
 type Session = { harnessSessionId: string; lastSeenSeq: number };
@@ -82,9 +84,11 @@ export class Scheduler {
     if (!st.running) this.schedule(conversationId);
   }
 
-  abortConversation(conversationId: string): void {
+  /** `reason` marks an abort whose unanswered question must be handed back; a bare abort never is. */
+  abortConversation(conversationId: string, reason?: 'pause' | 'stop'): void {
     const st = this.states.get(conversationId);
     if (!st) return;
+    if (reason) st.interruptedBy = reason;
     if (st.timer) clearTimeout(st.timer);
     st.timer = null;
     st.abort?.abort();
@@ -92,7 +96,7 @@ export class Scheduler {
 
   stopAll(): void {
     this.stopped = true;
-    for (const id of this.states.keys()) this.abortConversation(id);
+    for (const id of this.states.keys()) this.abortConversation(id, 'stop');
     for (const c of this.askAborts) c.abort();
     this.deps.emit({ type: 'stopped', stopped: true });
   }
@@ -144,6 +148,7 @@ export class Scheduler {
         lastProcessedSeq: initialSeq ?? this.deps.store.maxSeq(conversationId),
         abort: null,
         capNoticeDay: null,
+        interruptedBy: null,
       };
       this.states.set(conversationId, st);
     }
@@ -184,6 +189,7 @@ export class Scheduler {
     if (triggers.length === 0) return;
 
     st.running = true;
+    st.interruptedBy = null;
     st.abort = new AbortController();
     const signal = st.abort.signal;
     let finishedAny = false;
@@ -207,7 +213,10 @@ export class Scheduler {
       }
     } finally {
       // Stopped or paused before anyone finished: the question is still unanswered, so hand it back.
-      const interrupted = this.stopped || (store.getConversation(conversationId)?.settings.paused ?? false);
+      // The cause is recorded when the abort happens, not read from settings.paused here: a quick pause and
+      // resume would already have cleared it. signal.aborted alone is not the trigger either, because a plain
+      // abort of a hanging agent would then re-ask it in a loop.
+      const interrupted = this.stopped || st.interruptedBy !== null;
       if (interrupted && !finishedAny) {
         st.lastProcessedSeq = startSeq;
         st.agentRounds = startAgentRounds;
@@ -435,6 +444,11 @@ export class Scheduler {
     const sender = msg.senderId ? store.getMember(msg.senderId) : null;
     const targetId = store.askTarget(msg.conversationId);
     if (msg.kind !== 'normal' || sender?.kind !== 'human' || !targetId) return;
+    const target = store.getMember(targetId);
+    if (target?.adapter && !this.deps.isAvailable(target.adapter)) {
+      this.system(msg.conversationId, `${target.name} 现在不可用，这条消息没有被处理。`);
+      return;
+    }
     const r = await this.invokeForAsk(msg.conversationId, targetId, new AbortController().signal, msg.seq);
     const name = store.getMember(targetId)?.name ?? '对方';
     // Timeouts and errors already got a system message from execute().

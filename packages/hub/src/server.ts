@@ -188,7 +188,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const before = store.getConversation(req.params.id);
       if (!before) return reply.code(404).send({ error: 'unknown conversation' });
       const conversation = store.updateSettings(req.params.id, cleanSettings(req.body ?? {}));
-      if (conversation.settings.paused && !before.settings.paused) scheduler.abortConversation(conversation.id);
+      if (conversation.settings.paused && !before.settings.paused) scheduler.abortConversation(conversation.id, 'pause');
       if (!conversation.settings.paused && before.settings.paused) scheduler.kick(conversation.id);
       bus.emit({ type: 'conversation', conversation });
       return conversation;

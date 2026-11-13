@@ -51,7 +51,7 @@ export function reduce(s: ChatState, a: Action): ChatState {
         lastMessage[c.id] = c.lastMessage ? newer(prev, c.lastMessage) : prev;
       }
       const conversations = a.state.conversations.map(({ lastMessage: _drop, ...c }) => c);
-      return { ...s, me: a.state.me, members: a.state.members, conversations, lastMessage, stopped: a.state.stopped };
+      return { ...s, me: a.state.me, members: a.state.members, conversations, lastMessage, stopped: a.state.stopped, typing: {} };
     }
     case 'messages': {
       const id = a.conversationId;

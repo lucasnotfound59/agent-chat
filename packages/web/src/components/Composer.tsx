@@ -56,7 +56,8 @@ export function Composer({ candidates, onSend, placeholder = '发消息，@ 提�
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.nativeEvent.isComposing) return;
+    // Safari fires compositionend before the Enter keydown, so isComposing is already false; keyCode 229 still marks it.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (options.length > 0) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();

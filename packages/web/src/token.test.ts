@@ -25,6 +25,14 @@ describe('takeToken', () => {
     expect(t.replaced).toEqual(['/']);
   });
 
+  it('wipes a malformed fragment, stores nothing and falls back to the stored token', () => {
+    const t = env('#token=%E0%A4%A', 'saved');
+    expect(takeToken(t.e)).toBe('saved');
+    expect(t.store.get(TOKEN_KEY)).toBe('saved');
+    expect(t.replaced).toEqual(['/']);
+    expect(takeToken(env('#token=%zz').e)).toBeNull();
+  });
+
   it('falls back to the stored token without touching the address bar', () => {
     const t = env('', 'saved');
     expect(takeToken(t.e)).toBe('saved');
