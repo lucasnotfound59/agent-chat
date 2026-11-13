@@ -508,18 +508,6 @@ describe('ask routes', () => {
     ]);
   });
 
-  it('rejects human messages into an ask conversation', async () => {
-    const id = (await post(good)).json().conversationId;
-    const r = await app.inject({
-      method: 'POST',
-      url: `/api/conversations/${id}/messages`,
-      headers: auth,
-      payload: { body: 'hello' },
-    });
-    expect(r.statusCode).toBe(400);
-    expect(store.listMessages(id).some((m) => m.body === 'hello')).toBe(false);
-  });
-
   it('aborts the invocation when the client disconnects, but not after a normal response', async () => {
     await app.listen({ port: 0, host: '127.0.0.1' });
     const port = (app.server.address() as AddressInfo).port;
@@ -552,5 +540,12 @@ describe('ask routes', () => {
     const conv = store.listConversations().find((c) => c.kind === 'ask')!;
     await until(() => store.listInvocations(conv.id).length === 2 && store.listInvocations(conv.id)[1].outcome);
     expect(store.listInvocations(conv.id).map((i) => i.outcome)).toEqual(['replied', 'interrupted']);
+  });
+  it('accepts a human message in an ask conversation and the answerer replies', async () => {
+    expect((await post(good)).statusCode).toBe(200);
+    const conv = store.listConversations().find((c) => c.kind === 'ask')!;
+    const r = await app.inject({ method: 'POST', url: `/api/conversations/${conv.id}/messages`, headers: auth, payload: { body: '我来补充' } });
+    expect(r.statusCode).toBe(200);
+    await until(() => store.listMessages(conv.id).filter((m) => m.body === 'reply from A').length === 2);
   });
 });

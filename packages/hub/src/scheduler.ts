@@ -416,6 +416,24 @@ export class Scheduler {
     });
   }
 
+  /**
+   * A human message in an `ask` conversation: the answerer replies in its existing session, queued
+   * with MCP asks on the same conversation. Agent messages there never trigger anything.
+   */
+  async answerInAsk(msg: Message): Promise<void> {
+    const { store } = this.deps;
+    const sender = msg.senderId ? store.getMember(msg.senderId) : null;
+    const targetId = store.askTarget(msg.conversationId);
+    if (msg.kind !== 'normal' || sender?.kind !== 'human' || !targetId) return;
+    const r = await this.invokeForAsk(msg.conversationId, targetId, new AbortController().signal, msg.seq);
+    const name = store.getMember(targetId)?.name ?? '对方';
+    // Timeouts and errors already got a system message from execute().
+    if (r.kind === 'stopped') this.system(msg.conversationId, '已全局停止，这条消息没有被处理。');
+    else if (r.kind === 'capped') this.system(msg.conversationId, `${r.message}，这条消息没有被处理。`);
+    else if (r.kind === 'silent') this.system(msg.conversationId, `${name} 没有回答。`);
+    else if (r.kind === 'aborted') this.system(msg.conversationId, `${name} 的回答被中止了。`);
+  }
+
   /** Pre-flight for an ask, before anything is stored. May post the once-a-day cap notice. */
   askAdmission(conversationId: string | null): 'stopped' | 'capped' | null {
     if (this.stopped) return 'stopped';
@@ -454,7 +472,8 @@ export class Scheduler {
   ): { req: InvokeRequest; seenSeq: number } {
     const { store, dataDir } = this.deps;
     const members = store.listConversationMembers(conv.id);
-    const nameOf = (id: string | null) => members.find((m) => m.id === id)?.name ?? '系统';
+    const nameOf = (id: string | null) =>
+      members.find((m) => m.id === id)?.name ?? (id ? store.getMember(id)?.name : undefined) ?? '系统';
     // `upToSeq` (ask path) hides messages stored after this ask's own question, so queued asks
     // each present exactly their own question.
     const source = session

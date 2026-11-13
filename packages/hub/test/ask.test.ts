@@ -323,3 +323,49 @@ describe('store migration', () => {
     expect(() => new Store(file)).not.toThrow();
   });
 });
+
+describe('a human message in an ask conversation', () => {
+  it('is answered by the answerer in its existing session, which sees the human by name', async () => {
+    const t = make();
+    t.fa.handler = async () => ({ kind: 'reply', body: '第一答', harnessSessionId: 'sess-1' });
+    await t.ask({ question: '第一问' });
+    const conv = t.askConvs()[0];
+    t.fa.handler = async () => ({ kind: 'reply', body: '收到', harnessSessionId: 'sess-1' });
+    const m = t.store.addMessage({ conversationId: conv.id, senderId: t.human.id, body: '补充一句' });
+    await t.scheduler.answerInAsk(m);
+    expect(t.fa.calls[1].harnessSessionId).toBe('sess-1');
+    expect(t.fa.calls[1].newMessages.map((x) => [x.senderName, x.body])).toEqual([['我', '补充一句']]);
+    expect(t.store.listMessages(conv.id).at(-1)).toMatchObject({ senderId: t.a.id, body: '收到' });
+    expect(t.store.listInvocations(conv.id).map((i) => i.reason)).toEqual(['ask', 'ask']);
+  });
+
+  it('ignores agent messages there', async () => {
+    const t = make();
+    await t.ask({});
+    const conv = t.askConvs()[0];
+    const m = t.store.addMessage({ conversationId: conv.id, senderId: t.b.id, body: '我自己说一句' });
+    await t.scheduler.answerInAsk(m);
+    expect(t.fa.calls).toHaveLength(1);
+  });
+
+  it('explains in a system message why nothing was answered when the hub is stopped', async () => {
+    const t = make();
+    await t.ask({});
+    const conv = t.askConvs()[0];
+    t.scheduler.stopAll();
+    const m = t.store.addMessage({ conversationId: conv.id, senderId: t.human.id, body: '在吗' });
+    await t.scheduler.answerInAsk(m);
+    expect(t.fa.calls).toHaveLength(1);
+    expect(t.store.listMessages(conv.id).at(-1)).toMatchObject({ kind: 'system', body: '已全局停止，这条消息没有被处理。' });
+  });
+
+  it('explains a silent answerer', async () => {
+    const t = make();
+    await t.ask({});
+    const conv = t.askConvs()[0];
+    t.fa.handler = async () => ({ kind: 'silent', harnessSessionId: 's' });
+    const m = t.store.addMessage({ conversationId: conv.id, senderId: t.human.id, body: '在吗' });
+    await t.scheduler.answerInAsk(m);
+    expect(t.store.listMessages(conv.id).at(-1)).toMatchObject({ kind: 'system', body: 'A 没有回答。' });
+  });
+});

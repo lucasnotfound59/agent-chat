@@ -143,6 +143,12 @@ export class Store {
     return r ? this.toConversation(r) : null;
   }
 
+  /** The member an `ask` conversation was asked of, or null for any other conversation. */
+  askTarget(conversationId: string): string | null {
+    const r = this.db.prepare("SELECT ask_to FROM conversations WHERE id = ? AND kind = 'ask'").get(conversationId);
+    return (r?.ask_to as string | null | undefined) ?? null;
+  }
+
   updateSettings(id: string, patch: Partial<Settings>): Conversation {
     const c = this.getConversation(id);
     if (!c) throw new Error(`unknown conversation ${id}`);

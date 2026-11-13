@@ -200,7 +200,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     async (req, reply) => {
       const conv = store.getConversation(req.params.id);
       if (!conv) return reply.code(404).send({ error: 'unknown conversation' });
-      if (conv.kind === 'ask') return reply.code(400).send({ error: '提问会话暂不支持手动发言' });
       const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
       const attachments = (Array.isArray(req.body?.attachments) ? req.body.attachments : []).filter(
         (a) => typeof a?.name === 'string' && typeof a?.file === 'string' && validAttachment(conv.id, a.file),
@@ -215,8 +214,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         replyTo: typeof req.body?.replyTo === 'string' ? req.body.replyTo : null,
         attachments,
       });
-      scheduler.onMessage(message);
       bus.emit({ type: 'message', message });
+      if (conv.kind === 'ask') void scheduler.answerInAsk(message).catch((err) => console.error('[ask] answer failed', err));
+      else scheduler.onMessage(message);
       return message;
     },
   );
