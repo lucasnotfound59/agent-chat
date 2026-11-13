@@ -123,7 +123,7 @@ npm run disconnect             # 预览撤销；加 -- --apply 才真正撤销
 | OpenCode | 直接编辑全局配置（`~/.config/opencode/opencode.json`，只有 `opencode.jsonc` 存在时用它；设了 `XDG_CONFIG_HOME` 则在其下的 `opencode/`），写入 `mcp["agent-chat"] = {type: "local", command: [...], enabled: true, timeout: 600000}`，其余键原样保留，同时清掉旧的 `opencode mcp add` 留下的 `mcp.servers["agent-chat"]` | `opencode.json.agent-chat.bak`（同上，只在不存在时创建）；如果 `opencode.json` 不存在，`connect` 会新建它，没有可备份的内容 | 只删 `mcp["agent-chat"]`（以及 `mcp.servers["agent-chat"]`），其他条目不动；改动文件时同样可能创建 `.agent-chat.bak` 备份 |
 | DSH | 在每个存在的 profile（`web`、`tui`）的 `cordis.patch.yml` 里加一个 `# >>> agent-chat` 标记块 | `cordis.patch.yml.agent-chat.bak`（同上） | 删除标记块，备份保留 |
 
-OpenCode 不用 `opencode mcp add`：实测 OpenCode v2.2.6 的该命令写出 `mcp.servers.<名字>` 结构，OpenCode 并不读取，登记后 `opencode mcp list` 为空、agent 也看不到工具；`mcp["agent-chat"]` 这种写法经实测可用（`opencode mcp list` 显示 connected，默认 agent 能调用 `list_members`）。写入的 `timeout` 是 OpenCode 对 MCP 请求的超时（毫秒），它的默认值只有 5000，对 `ask` 太短。如果 OpenCode 的配置文件带注释（JSONC）或不是合法 JSON，脚本不会改它，而是报错并打印要手工加的条目。
+OpenCode 不用 `opencode mcp add`：实测 OpenCode v2.2.6 的该命令写出 `mcp.servers.<名字>` 结构，OpenCode 并不读取，登记后 `opencode mcp list` 为空、agent 也看不到工具；`mcp["agent-chat"]` 这种写法经实测可用（在临时配置目录里 `opencode mcp list` 显示 connected；在真实全局配置里 `mcp list` 反而显示为空，但默认 agent 能调用 `list_members` 和 `ask`，见"尚未验证的部分"）。写入的 `timeout` 是 OpenCode 对 MCP 请求的超时（毫秒），它的默认值只有 5000，对 `ask` 太短。如果 OpenCode 的配置文件带注释（JSONC）或不是合法 JSON，脚本不会改它，而是报错并打印要手工加的条目。
 
 所有被写入的配置文件都通过同目录临时文件加改名的方式原子写入，符号链接会被跟随（链接本身保留，改的是它指向的文件）。重复运行 `connect` 是安全的；如果先删掉旧登记、重新登记却失败了，错误信息会明确说明旧登记已被删除、现在处于缺失状态，以及如何重试。
 
@@ -145,7 +145,7 @@ codex exec -c 'mcp_servers.agent-chat.default_tools_approval_mode="approve"' ...
 
 ### 隔离
 
-聊天中的 agent 一律只读，并且关闭所有 MCP 服务、插件和连接器，所以被提问的 agent 看不到上面的两个工具，不会互相无限递归。具体做法：Codex 用 `--ignore-user-config --disable apps --disable plugins`；Claude Code 用 `--strict-mcp-config`；OpenCode 用自己定义的 `agentchat` agent，只允许 read、grep、glob、webfetch、websearch，其余全部拒绝；DSH 用 `headless` profile。中枢启动的每个子进程还带环境变量 `AGENTCHAT_INVOCATION=1`，MCP 服务看到它就不提供任何工具；但这一层只是尽力而为：agent 软件不一定把环境变量转给它启动的 MCP 服务（Codex 和 DSH 没有验证过）。各软件自己的 MCP 隔离这一层：只有 Codex 和 OpenCode 用真实命令行观察到有效（限于上面已列出的条件）；DSH 的隔离只依赖 `headless` profile 里没有 MCP 条目（它的冒烟检查在这台机器上通过，但只能说明这一点）；Claude Code 完全没有验证。
+聊天中的 agent 一律只读，并且关闭所有 MCP 服务、插件和连接器，所以被提问的 agent 看不到上面的两个工具，不会互相无限递归。具体做法：Codex 用 `--ignore-user-config --disable apps --disable plugins`；Claude Code 用 `--strict-mcp-config`；OpenCode 用自己定义的 `agentchat` agent，只允许 read、grep、glob、webfetch、websearch，其余全部拒绝；DSH 用 `headless` profile。中枢启动的每个子进程还带环境变量 `AGENTCHAT_INVOCATION=1`，MCP 服务看到它就不提供任何工具；但这一层只是尽力而为：agent 软件不一定把环境变量转给它启动的 MCP 服务（Codex 和 DSH 没有验证过；OpenCode 的 MCP 服务由它的后台服务启动，实测拿不到这个变量）。各软件自己的 MCP 隔离这一层：只有 Codex 和 OpenCode 用真实命令行观察到有效（限于上面已列出的条件）；DSH 的隔离只依赖 `headless` profile 里没有 MCP 条目（它的冒烟检查在这台机器上通过，但只能说明这一点）；Claude Code 完全没有验证。
 
 DSH 的例外：DSH 的隔离完全依赖你没有往 `headless` profile 里加过 MCP 服务（`headless` profile 本身没有配置 MCP 服务），`connect` 不会往 `headless` 里写。如果你自己在 `headless` profile 里配了 MCP 服务，聊天时它们会被加载。
 
@@ -153,13 +153,14 @@ DSH 的例外：DSH 的隔离完全依赖你没有往 `headless` profile 里加�
 
 ### 尚未验证的部分
 
-- 真实的 `connect --apply` 只对 Codex 运行过（2026-11-13，codex-cli 0.167.0，`npm run connect -- --apply codex`），从未对真实的 Claude Code、OpenCode、DSH 运行过；OpenCode 只在临时配置目录里试过条目的形状。没跑过的目标，第一次真实运行就是测试：运行前先把相关配置文件（`~/.claude.json`、OpenCode 的全局配置、DSH 的 `cordis.patch.yml`）自己复制一份，运行后再和 `.agent-chat.bak`（以及你的复制）对比；建议一次只登记一个目标。
+- 真实的 `connect --apply` 只对 Codex 和 OpenCode 运行过（2026-11-13，codex-cli 0.167.0、OpenCode v2.2.6），从未对真实的 Claude Code、DSH 运行过。没跑过的目标，第一次真实运行就是测试：运行前先把相关配置文件（`~/.claude.json`、DSH 的 `cordis.patch.yml`）自己复制一份，运行后再和 `.agent-chat.bak`（以及你的复制）对比；建议一次只登记一个目标。
 - Codex 那次真实登记观察到的：4 步全部成功；`.agent-chat.bak` 与事先的复制逐字节相同；新增的只有 `[mcp_servers.agent-chat]`（`command`、`args`、`tool_timeout_sec = 600`）。但 `codex mcp add` 会重写整个 `[mcp_servers]` 部分，已有的其他条目被改了格式：去掉等于默认值的键（`enabled = true`、`args = []`）、整数变成浮点数（`120` 变成 `120.0`）、`env` 里的键换了顺序；用 TOML 解析器逐项对比，内容等价；文件里的注释保留。登记后中枢在 4317 端口运行，只带单次审批覆盖的 `codex exec` 通过登记的条目成功调用了 `list_members` 和 `ask`（问 OpenCode，中枢记一次唤起，没有反向提问）。只跑了一次；交互式 Codex、`disconnect --apply`、重复运行 `connect` 都没有在真实配置上试过。
-- 在中枢里运行 DSH 时，观察到 `~/.dsh/profiles/headless/cordis.patch.yml` 的修改时间变了（大小没变）。本仓库里没有任何代码写那个文件（中枢用 `--patch` 从自己的数据目录传模型覆盖），看起来是 DSH 自己改的，但没有证实。
+- OpenCode 那次真实登记观察到的：`.agent-chat.bak` 与事先的复制逐字节相同；diff 只多了 `mcp["agent-chat"]`，`$schema` 和 `skills` 原样保留；`opencode debug config` 显示它被规范化为 `mcp.servers["agent-chat"]`（三个超时都是 600000）。但在真实全局配置下，`opencode mcp list`（带不带 `--standalone` 都一样）显示 "No MCP servers configured"，而后台服务其实已经启动了这个 MCP 服务，所以 `mcp list` 不能用来判断有没有登记上。中枢在 4317 端口运行时，默认 agent 的 `opencode run` 通过 `execute` 工具成功调用了 `list_members` 和 `ask`（问 DSH，中枢记一次唤起）。后台服务加真实全局登记的组合下，中枢以 Codex 名义问 OpenCode 并要求它调用 `list_members`：`agentchat` agent 回答"没有这个工具"，自述的工具只有 `glob grep read skill webfetch websearch`，没有发生调用。后台服务为每个工作目录各启动一个 `agent-chat` MCP 服务进程，包括中枢给 OpenCode 用的工作区，这些进程在服务运行期间一直存在，进程环境里没有 `AGENTCHAT_INVOCATION`，所以 OpenCode 这边的隔离只靠 `agentchat` agent 的权限规则。每种情况只跑了一次；`disconnect --apply` 没有在真实配置上试过。
+- 在中枢里运行 DSH 时，`~/.dsh/profiles/headless/cordis.patch.yml` 的修改时间会变，内容不变：2026-11-13 调用 DSH 前复制一份，调用后用 `cmp` 对比逐字节相同，只有修改时间变了。本仓库里没有任何代码写那个文件（中枢用 `--patch` 从自己的数据目录传模型覆盖），所以推测是 DSH 自己重写了同样的内容。
 - Claude Code 的命令行在这台机器上没有登录，涉及 Claude Code 的一切（聊天调用、`--strict-mcp-config` 的隔离效果、`claude mcp add` 的登记、冒烟脚本里新增的 `complete()` 检查）都没有用真实命令行验证过。
 - Claude Code 的 MCP 工具超时是否由环境变量 `MCP_TOOL_TIMEOUT` 控制、是否会被遵守，未验证；`connect` 不改它。如果 `ask` 在 Claude Code 里提前超时，需要自己设置这个环境变量。
 - OpenCode 的"聊天时看不到 `agent-chat` 工具"用真实命令行测过：把 `agent-chat` 登记在（临时目录里的）全局配置、适配器的 `opencode.json` 放在另一个工作目录，`agentchat` agent 的工具只有 `glob grep read skill webfetch websearch`，要求它调用 `list_members` 时没有发生任何工具调用，而默认 agent 能调用（通过它的 `execute` 工具）。OpenCode 的 MCP 工具不一定出现在模型自述的工具清单里，所以自述清单本身不是可靠证据，冒烟脚本里 OpenCode 的"MCP 隔离"一步实际上是空洞的（默认 agent 也会回答 `NO_MCP_TOOLS`）；可靠的证据是上面这种"要求它真的去调用"的实测。
-  这个结论的局限：每种情况只跑了一次；探测用的是 OpenCode 的 `--standalone` 模式加临时全局配置目录，因为 OpenCode 的后台服务会忽略客户端传入的 `XDG_CONFIG_HOME`；后台服务加真实全局登记这种组合下的行为没有验证过；OpenCode 的模型自述工具清单不可靠（MCP 工具是通过 `execute` 工具调用的），所以决定性的证据是“调用尝试”的结果，而不是自述清单。
+  这个结论的局限：每种情况只跑了一次；探测用的是 OpenCode 的 `--standalone` 模式加临时全局配置目录，因为 OpenCode 的后台服务会忽略客户端传入的 `XDG_CONFIG_HOME`；后台服务加真实全局登记这种组合后来测过一次（见上面 OpenCode 真实登记那一条）；OpenCode 的模型自述工具清单不可靠（MCP 工具是通过 `execute` 工具调用的），所以决定性的证据是“调用尝试”的结果，而不是自述清单。
 
 ## 测试
 
