@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createHubClient, HubUnreachableError, readTokenFromKeychain, resolveBaseUrl } from '../src/hubClient';
+import { HubResponseError, createHubClient, HubUnreachableError, readTokenFromKeychain, resolveBaseUrl } from '../src/hubClient';
 
 function fakeFetch(res: { status: number; body: unknown } | Error) {
   const calls: { url: string; init: RequestInit }[] = [];
@@ -49,13 +49,24 @@ describe('createHubClient', () => {
     expect(new Headers(f.calls[0].init.headers).get('authorization')).toBe('Bearer tok');
   });
 
-  it('a non-2xx response throws a plain Error carrying the hub error text', async () => {
+  it('a non-2xx response throws a HubResponseError carrying the hub error text', async () => {
     const f = fakeFetch({ status: 404, body: { error: 'no such member: zed', code: 'unknown_member' } });
     const c = createHubClient({ baseUrl: base, as: 'codex', getToken: () => 'tok', fetchImpl: f.fetchImpl });
     const err = await c.ask('zed', 'q').catch((e) => e);
-    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(HubResponseError);
     expect(err).not.toBeInstanceOf(HubUnreachableError);
     expect(err.message).toBe('no such member: zed');
+  });
+
+  it('a 401 says the token was rejected and what to do, instead of the bare word "unauthorized"', async () => {
+    const f = fakeFetch({ status: 401, body: { error: 'unauthorized' } });
+    const c = createHubClient({ baseUrl: base, as: 'codex', getToken: () => 'stale', fetchImpl: f.fetchImpl });
+    for (const call of [() => c.ask('zed', 'q'), () => c.listMembers()]) {
+      const err = await call().catch((e) => e);
+      expect(err).not.toBeInstanceOf(HubUnreachableError);
+      expect(err.message).toMatch(/rejected the access token \(HTTP 401\)/);
+      expect(err.message).toMatch(/restart the hub/);
+    }
   });
 
   it('a network error throws HubUnreachableError', async () => {

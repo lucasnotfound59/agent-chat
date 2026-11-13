@@ -16,6 +16,11 @@ export interface HubClient {
 }
 
 export class HubUnreachableError extends Error {}
+/** A non-2xx answer from the hub; its text may quote the answering harness's output (e.g. a stderr tail). */
+export class HubResponseError extends Error {}
+
+const UNAUTHORIZED_MESSAGE =
+  'The hub rejected the access token (HTTP 401). The token in the keychain may have changed since this tool started: ask the user to restart the hub and this agent, then try again.';
 
 const ASK_TIMEOUT_MS = 600000;
 const LIST_TIMEOUT_MS = 30000;
@@ -144,8 +149,9 @@ export function createHubClient(opts: {
       body = null;
     }
     if (!res.ok) {
+      if (res.status === 401) throw new Error(UNAUTHORIZED_MESSAGE);
       const msg = (body as { error?: unknown } | null)?.error;
-      throw new Error(typeof msg === 'string' && msg !== '' ? msg : `hub returned HTTP ${res.status}`);
+      throw new HubResponseError(typeof msg === 'string' && msg !== '' ? msg : `hub returned HTTP ${res.status}`);
     }
     return body;
   }
