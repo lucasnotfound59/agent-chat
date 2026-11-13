@@ -71,6 +71,20 @@ describe('web UI files', () => {
     expect(escape.body).not.toContain('"name"');
   });
 
+  it('does not serve a real file that sits outside the web root', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'agentchat-parent-'));
+    const root = join(parent, 'dist');
+    mkdirSync(root);
+    writeFileSync(join(root, 'index.html'), '<!doctype html><div id="root">INDEX</div>');
+    writeFileSync(join(parent, 'secret.txt'), 'TOP-SECRET');
+    const app = makeApp(root);
+    for (const url of ['/%2e%2e/secret.txt', '/..%2fsecret.txt', '/%2e%2e%2fsecret.txt', '/../secret.txt', '/assets/..%2f..%2fsecret.txt']) {
+      const r = await app.inject({ method: 'GET', url });
+      expect(r.body, url).toContain('INDEX');
+      expect(r.body, url).not.toContain('TOP-SECRET');
+    }
+  });
+
   it('answers unknown /api paths with a JSON 404, not the page', async () => {
     const app = makeApp(builtWeb());
     const r = await app.inject({ method: 'GET', url: '/api/nope' });
