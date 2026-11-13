@@ -176,6 +176,8 @@ export class Scheduler {
     if (st.running || this.stopped) return;
     const conv = store.getConversation(conversationId);
     if (!conv || conv.kind === 'ask' || conv.settings.paused) return;
+    const startSeq = st.lastProcessedSeq;
+    const startAgentRounds = st.agentRounds;
     const pending = store.listMessagesAfter(conversationId, st.lastProcessedSeq);
     const triggers = pending.filter((m) => m.kind === 'normal');
     if (pending.length > 0) st.lastProcessedSeq = pending[pending.length - 1].seq;
@@ -184,6 +186,7 @@ export class Scheduler {
     st.running = true;
     st.abort = new AbortController();
     const signal = st.abort.signal;
+    let finishedAny = false;
     try {
       const members = store.listConversationMembers(conversationId);
       const humanIds = new Set(members.filter((m) => m.kind === 'human').map((m) => m.id));
@@ -200,8 +203,15 @@ export class Scheduler {
         if (!this.underDailyCap(current, st)) break;
         const completed = await this.invokeAgent(current, agent, 'round', signal);
         if (!completed) break;
+        finishedAny = true;
       }
     } finally {
+      // Stopped or paused before anyone finished: the question is still unanswered, so hand it back.
+      const interrupted = this.stopped || (store.getConversation(conversationId)?.settings.paused ?? false);
+      if (interrupted && !finishedAny) {
+        st.lastProcessedSeq = startSeq;
+        st.agentRounds = startAgentRounds;
+      }
       this.endRun(conversationId, st);
     }
   }

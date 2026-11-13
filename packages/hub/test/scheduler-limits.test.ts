@@ -407,3 +407,55 @@ describe('attachments', () => {
     expect(existsSync(join(t.dataDir, 'workspaces', 'fake-a', 'config.json'))).toBe(false);
   });
 });
+
+describe('an interrupted round does not lose the question', () => {
+  const answer = async () => ({ kind: 'reply' as const, body: '答', harnessSessionId: 's' });
+
+  it('pausing mid-answer, then resuming, asks again', async () => {
+    const t = setup();
+    t.fa.handler = hang;
+    t.say(t.dm.id, '问题');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(t.fa.calls).toHaveLength(1);
+    t.store.updateSettings(t.dm.id, { paused: true });
+    t.scheduler.abortConversation(t.dm.id);
+    await t.settle();
+    t.fa.handler = answer;
+    t.store.updateSettings(t.dm.id, { paused: false });
+    t.scheduler.kick(t.dm.id);
+    await t.settle();
+    expect(t.fa.calls).toHaveLength(2);
+    expect(t.bodies(t.dm.id)).toContain('答');
+  });
+
+  it('stopping all mid-answer, then resuming, asks again', async () => {
+    const t = setup();
+    t.fa.handler = hang;
+    t.say(t.dm.id, '问题');
+    await vi.advanceTimersByTimeAsync(10);
+    t.scheduler.stopAll();
+    await t.settle();
+    t.fa.handler = answer;
+    t.scheduler.resumeAll();
+    await t.settle();
+    expect(t.fa.calls).toHaveLength(2);
+    expect(t.bodies(t.dm.id)).toContain('答');
+  });
+
+  it('does not ask again when an agent already answered in that round', async () => {
+    const t = setup({ settings: { maxAgentRounds: 0 } });
+    t.fa.handler = answer;
+    t.fb.handler = hang;
+    t.say(t.group.id, '@A @B 看看', [t.a.id, t.b.id]);
+    await t.settle();
+    expect(t.fa.calls).toHaveLength(1);
+    expect(t.fb.calls).toHaveLength(1);
+    t.scheduler.stopAll();
+    await t.settle();
+    t.fb.handler = answer;
+    t.scheduler.resumeAll();
+    await t.settle();
+    expect(t.fa.calls).toHaveLength(1);
+    expect(t.fb.calls).toHaveLength(1);
+  });
+});
