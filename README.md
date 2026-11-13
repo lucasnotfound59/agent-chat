@@ -10,12 +10,17 @@
 
 ```bash
 npm install
+npm run build      # 构建网页界面（改过 packages/web 之后要重新运行）
 npm run hub
 ```
 
+`npm run hub` 启动后会用默认浏览器打开界面，终端里也会打印界面地址（形如 `http://127.0.0.1:4317/#token=…`）。这个地址里含访问令牌：页面打开后会把令牌存进这个浏览器的 localStorage，并从地址栏里抹掉；以后在同一个浏览器里直接访问 `http://127.0.0.1:4317` 即可，hub 重启也不用重新打开。换浏览器或清除浏览器数据后，需要再用终端里的地址打开一次。设置 `AGENTCHAT_NO_OPEN=1` 时只打印地址、不自动打开浏览器。没有运行过 `npm run build` 时，页面会提示先构建。hub 连不上时（例如被停掉）页面会显示提示条并持续重连，hub 回来后自动恢复；加载更早的消息失败时，会显示重试按钮。
+
+界面已知的代价：令牌保存在该浏览器的 localStorage 里；打开浏览器的一瞬间，令牌会出现在 `open` 命令的参数里，同一台机器上的其他进程可以从进程列表看到（与写入钥匙串时相同）。agent 的回答按 Markdown 显示，但不渲染原始 HTML、不加载图片、只保留 http(s) 和 mailto 链接。
+
 中枢监听 `http://127.0.0.1:4317`，只接受本机连接。数据在 `~/Library/Application Support/AgentChat/`。访问令牌在 macOS 钥匙串里（服务名 `AgentChat`，账户名 `hub-token`），不在数据目录的文件里。
 
-环境变量：`AGENTCHAT_PORT` 改端口（必须是 1–65535 的十进制数，否则中枢在碰数据目录和钥匙串之前就以退出码 2 结束），`AGENTCHAT_DATA_DIR` 改数据目录。
+环境变量：`AGENTCHAT_PORT` 改端口（必须是 1–65535 的十进制数，否则中枢在碰数据目录和钥匙串之前就以退出码 2 结束），`AGENTCHAT_DATA_DIR` 改数据目录，`AGENTCHAT_NO_OPEN=1` 启动时不自动打开浏览器（只打印界面地址）。
 
 ## 各 agent 的前提
 
@@ -42,7 +47,9 @@ npm run hub
   - 把 `triageAgent` 指定为一个当前不可用的 agent，等于关闭判断，不会退回到别的 agent。
 - `dsh`：DSH 使用的模型，`{ provider, model }`。
 
-## 在有界面之前怎么用
+## 用 curl 调接口
+
+界面能做的事都可以直接调接口完成，下面是常用的几个。
 
 除 `/ws` 外，每个请求都要带请求头 `Authorization: Bearer <token>`。请求只能发往 `127.0.0.1`、`localhost` 或 `[::1]`，其他主机名会被拒绝。
 
@@ -81,6 +88,8 @@ CONV=<会话id>
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"body":"你好"}' $BASE/api/conversations/$CONV/messages
 ```
+
+agent 之间的 ask 会话也可以这样发言：你的消息由被问的 agent 在原来的上下文里回答（提问的 agent 看不到你的插话，但它下次再问时，被问方能看到完整历史）。
 
 新建群聊（`memberIds` 是要加入的 agent 成员 id，你自己会自动加入）：
 
@@ -167,9 +176,16 @@ DSH 的例外：DSH 的隔离完全依赖你没有往 `headless` profile 里加�
 
 ```bash
 npm test                       # 自动测试，不调用真实 agent
+npm run e2e                    # 构建界面，并用 Playwright 对只有假 agent 的 hub 跑端到端测试
 npm run smoke -- codex         # 手动冒烟，会调用真实 agent 并产生费用
 ```
 
 `npm test` 的每个包都挂着同一道防线（`test/guard.ts`）：临时 `HOME`、`XDG_CONFIG_HOME`、`CODEX_HOME`，并在 `PATH` 最前面放 `codex`、`claude`、`opencode`、`dsh`、`security` 的假脚本，任何测试调用到它们，整个测试文件就失败。
 
+`npm run e2e` 使用端口 4399，hub 里只有假 agent，不调用真实 agent。
+
 `smoke` 可选 `claude`、`codex`、`opencode`、`dsh`。每个 agent 都会依次跑：`complete()` 的三个检查（原始提问、MCP 隔离、工具清单）、会话续接、只读强制。DSH 可用 `DSH_SMOKE_MODEL="provider|model"` 指定模型。
+
+### 开发界面
+
+`npm run web:dev` 启动 Vite 开发服务器（http://localhost:5173），它把 `/api` 和 `/ws` 代理到 4317 端口的 hub；在这个地址后面同样要加 `#token=…` 打开一次。
