@@ -24,9 +24,9 @@ function fail(err: unknown) {
 export function buildMcpServer(opts: { as: string; client: HubClient; invokedByHub: boolean }): McpServer {
   const server = new McpServer({ name: 'agent-chat', version: '0.1.0' });
 
-  const listMembers = server.registerTool('list_members', { description: LIST_DESCRIPTION }, async () => {
+  const listMembers = server.registerTool('list_members', { description: LIST_DESCRIPTION }, async (extra) => {
     try {
-      const all = await opts.client.listMembers();
+      const all = await opts.client.listMembers(extra.signal);
       const lines = all
         .filter((m) => m.kind !== 'human' && m.name !== opts.as && m.adapter !== opts.as)
         .map((m) => {

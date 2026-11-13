@@ -3,18 +3,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
 import { FakeAdapter } from '@agent-chat/adapters';
-import { Scheduler } from '../src/scheduler';
+import { Scheduler, type TriageLogEntry } from '../src/scheduler';
 import { Store } from '../src/store';
 import type { Triage, TriageInput } from '../src/triage';
 import type { HubEvent, Settings } from '../src/types';
 
 export class FakeTriage implements Triage {
   calls: TriageInput[] = [];
+  signals: AbortSignal[] = [];
   /** Names to pick; 'ALL' picks every candidate in order. */
   pickNames: string[] | 'ALL' = [];
   fail = false;
-  async pick(input: TriageInput): Promise<string[]> {
+  async pick(input: TriageInput, signal?: AbortSignal): Promise<string[]> {
     this.calls.push(input);
+    if (signal) this.signals.push(signal);
     if (this.fail) throw new Error('triage down');
     if (this.pickNames === 'ALL') return input.candidates.map((c) => c.id);
     return this.pickNames
@@ -24,7 +26,12 @@ export class FakeTriage implements Triage {
 }
 
 export function setup(
-  opts: { triage?: boolean | Triage; settings?: Partial<Settings>; onEmit?: (e: HubEvent) => void } = {},
+  opts: {
+    triage?: boolean | Triage;
+    settings?: Partial<Settings>;
+    onEmit?: (e: HubEvent) => void;
+    log?: (entry: TriageLogEntry) => void;
+  } = {},
 ) {
   const store = new Store(':memory:');
   const dataDir = mkdtempSync(join(tmpdir(), 'agentchat-test-'));
@@ -56,6 +63,7 @@ export function setup(
     },
     dataDir,
     isAvailable: (name) => !unavailable.has(name),
+    log: opts.log,
   });
   /** Stores a human message and notifies the scheduler, like the HTTP layer does. */
   const say = (conversationId: string, body: string, mentions: string[] = []) => {

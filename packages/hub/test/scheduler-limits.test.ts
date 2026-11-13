@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { AdapterError } from '@agent-chat/adapters';
+import { AdapterError, FakeAdapter } from '@agent-chat/adapters';
 import type { InvokeRequest, InvokeResult } from '@agent-chat/adapters';
 import { setup } from './helpers';
+import type { TriageLogEntry } from '../src/scheduler';
+import { AgentTriage } from '../src/triage';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -40,6 +42,83 @@ describe('daily cap', () => {
     const notices = t.store.listMessages(t.group.id).filter((m) => m.kind === 'system');
     expect(notices).toHaveLength(1);
     expect(notices[0].body).toContain('上限');
+  });
+});
+
+describe('triage versus cap, stop and logging', () => {
+  it('does not call triage when the conversation is already at its cap', async () => {
+    const t = setup({ triage: true, settings: { dailyInvocationCap: 1, maxAgentRounds: 0 } });
+    t.triage.pickNames = ['A'];
+    t.store.startInvocation(t.group.id, t.a.id, 'round');
+    t.say(t.group.id, '没有点名');
+    await t.settle();
+    expect(t.triage.calls).toEqual([]);
+    expect(t.fa.calls.length + t.fb.calls.length).toBe(0);
+  });
+
+  it('a mentioned agent in a capped conversation still gets the cap notice and is not invoked', async () => {
+    const t = setup({ triage: true, settings: { dailyInvocationCap: 1, maxAgentRounds: 0 } });
+    t.store.startInvocation(t.group.id, t.a.id, 'round');
+    t.say(t.group.id, '@A 在吗', [t.a.id]);
+    await t.settle();
+    expect(t.triage.calls).toEqual([]);
+    expect(t.fa.calls).toHaveLength(0);
+    expect(t.store.listMessages(t.group.id).filter((m) => m.kind === 'system')).toHaveLength(1);
+  });
+
+  it('global stop aborts an in-flight triage call and nobody is invoked afterwards', async () => {
+    const tf = new FakeAdapter('fake-t', 'T');
+    let seen: AbortSignal | undefined;
+    tf.completeHandler = (req) =>
+      new Promise((_res, rej) => {
+        seen = req.signal;
+        req.signal.addEventListener('abort', () => rej(new Error('aborted')));
+      });
+    const t = setup({ triage: new AgentTriage(tf, '/w') });
+    t.say(t.group.id, '没有点名');
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(tf.completeCalls).toHaveLength(1);
+    expect(seen!.aborted).toBe(false);
+    t.scheduler.stopAll();
+    await t.settle();
+    expect(seen!.aborted).toBe(true);
+    expect(t.fa.calls.length + t.fb.calls.length).toBe(0);
+  });
+
+  it('pausing the conversation aborts an in-flight triage call', async () => {
+    const t = setup({ triage: true });
+    t.triage.pick = (_i, signal) =>
+      new Promise((_res, rej) => signal?.addEventListener('abort', () => rej(new Error('aborted'))));
+    t.say(t.group.id, '没有点名');
+    await vi.advanceTimersByTimeAsync(3000);
+    t.scheduler.abortConversation(t.group.id);
+    await t.settle();
+    expect(t.fa.calls.length + t.fb.calls.length).toBe(0);
+  });
+
+  it('logs one entry per triage call without message bodies', async () => {
+    const entries: TriageLogEntry[] = [];
+    const t = setup({ triage: true, settings: { maxAgentRounds: 0 }, log: (e) => entries.push(e) });
+    t.triage.pickNames = ['A'];
+    t.say(t.group.id, '秘密内容');
+    await t.settle();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].outcome).toEqual({ kind: 'picked', names: ['A'] });
+    expect(entries[0].adapter).toBeNull();
+    expect(typeof entries[0].durationMs).toBe('number');
+    expect(JSON.stringify(entries)).not.toContain('秘密内容');
+
+    t.triage.fail = true;
+    t.say(t.group.id, '再来');
+    await t.settle();
+    expect(entries).toHaveLength(2);
+    expect(entries[1].outcome.kind).toBe('error');
+
+    t.triage.fail = false;
+    t.triage.pickNames = [];
+    t.say(t.group.id, '第三');
+    await t.settle();
+    expect(entries[2].outcome).toEqual({ kind: 'none' });
   });
 });
 

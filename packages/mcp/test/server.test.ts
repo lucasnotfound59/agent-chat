@@ -232,3 +232,19 @@ describe('main.ts process', () => {
     }
   }, 30000);
 });
+
+describe('list_members cancellation', () => {
+  it('passes the tool call abort signal to the client', async () => {
+    let seen: AbortSignal | undefined;
+    const c = await connect(
+      fakeClient({
+        listMembers: async (signal) => {
+          seen = signal;
+          return [];
+        },
+      }),
+    );
+    await c.callTool({ name: 'list_members', arguments: {} });
+    expect(seen).toBeInstanceOf(AbortSignal);
+  });
+});

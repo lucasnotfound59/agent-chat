@@ -7,8 +7,10 @@ export interface TriageInput {
 }
 
 export interface Triage {
+  /** Name of the agent behind this triage, for the log line. */
+  readonly label?: string;
   /** Returns candidate ids in speaking order; may be empty. */
-  pick(input: TriageInput): Promise<string[]>;
+  pick(input: TriageInput, signal: AbortSignal): Promise<string[]>;
 }
 
 const SYSTEM = [
@@ -85,6 +87,10 @@ export function extractSpeakersObject(text: string): string {
 }
 
 export class AgentTriage implements Triage {
+  get label(): string {
+    return this.adapter.name;
+  }
+
   constructor(
     private readonly adapter: AgentAdapter,
     private readonly workdir: string,
@@ -109,11 +115,11 @@ export class AgentTriage implements Triage {
     return [...head, ...lines, ...tail].join('\n');
   }
 
-  async pick(input: TriageInput): Promise<string[]> {
+  async pick(input: TriageInput, signal: AbortSignal = new AbortController().signal): Promise<string[]> {
     const text = await this.adapter.complete({
       prompt: this.buildPrompt(input),
       workdir: this.workdir,
-      signal: new AbortController().signal,
+      signal,
       timeoutMs: this.timeoutMs,
     });
     return parseSpeakers(extractSpeakersObject(text), input.candidates);

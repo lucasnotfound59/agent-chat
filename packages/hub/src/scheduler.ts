@@ -11,6 +11,13 @@ const HISTORY_REPLAY = 30;
 const MAX_NEW_MESSAGES = 50;
 const TRIAGE_TRANSCRIPT = 20;
 
+/** One entry per triage call. Carries no message text. */
+export interface TriageLogEntry {
+  adapter: string | null;
+  durationMs: number;
+  outcome: { kind: 'picked'; names: string[] } | { kind: 'none' } | { kind: 'error'; message: string };
+}
+
 export interface SchedulerDeps {
   store: Store;
   adapters: Map<string, AgentAdapter>;
@@ -18,6 +25,8 @@ export interface SchedulerDeps {
   emit: (e: HubEvent) => void;
   dataDir: string;
   isAvailable: (adapterName: string) => boolean;
+  /** Receives one entry per triage call; defaults to no-op. */
+  log?: (entry: TriageLogEntry) => void;
 }
 
 interface ConvState {
@@ -168,7 +177,7 @@ export class Scheduler {
         if (st.agentRounds >= conv.settings.maxAgentRounds) return;
         st.agentRounds++;
       }
-      const speakers = await this.pickSpeakers(conv, members, triggers);
+      const speakers = await this.pickSpeakers(conv, members, triggers, signal);
       for (const agent of speakers) {
         if (signal.aborted || this.stopped) break;
         const current = store.getConversation(conversationId);
@@ -182,7 +191,12 @@ export class Scheduler {
     }
   }
 
-  private async pickSpeakers(conv: Conversation, members: Member[], triggers: Message[]): Promise<Member[]> {
+  private async pickSpeakers(
+    conv: Conversation,
+    members: Member[],
+    triggers: Message[],
+    signal: AbortSignal,
+  ): Promise<Member[]> {
     const agents = members.filter((m) => m.kind === 'agent' && m.adapter !== null && this.deps.isAvailable(m.adapter));
     // An agent never answers a round made up only of its own messages.
     const eligible = agents.filter((a) => !triggers.every((t) => t.senderId === a.id));
@@ -198,6 +212,8 @@ export class Scheduler {
     const rest = eligible.filter((a) => !mentioned.includes(a));
     const triage = this.deps.triage();
     if (!triage || rest.length === 0) return mentioned;
+    // A capped conversation invokes nobody, so a triage call would be paid for and thrown away.
+    if (this.isCapped(conv)) return mentioned;
 
     const nameOf = (id: string | null) => members.find((m) => m.id === id)?.name ?? '系统';
     const transcript = this.deps.store
@@ -205,19 +221,37 @@ export class Scheduler {
       .filter((m) => m.kind === 'normal')
       .map((m) => ({ sender: nameOf(m.senderId), body: m.body }));
     let picked: Member[] = [];
+    const started = Date.now();
+    let outcome: TriageLogEntry['outcome'];
     try {
-      const ids = await triage.pick({
-        transcript,
-        candidates: rest.map((a) => ({ id: a.id, name: a.name, bio: a.bio })),
-      });
+      const ids = await triage.pick(
+        {
+          transcript,
+          candidates: rest.map((a) => ({ id: a.id, name: a.name, bio: a.bio })),
+        },
+        signal,
+      );
       for (const id of ids) {
         const a = rest.find((x) => x.id === id);
         if (a && !picked.includes(a)) picked.push(a);
       }
-    } catch {
+      outcome = picked.length > 0 ? { kind: 'picked', names: picked.map((a) => a.name) } : { kind: 'none' };
+    } catch (err) {
       picked = [];
+      outcome = { kind: 'error', message: err instanceof Error ? err.message.slice(0, 200) : 'unknown error' };
+    }
+    try {
+      this.deps.log?.({ adapter: triage.label ?? null, durationMs: Date.now() - started, outcome });
+    } catch {
+      // logging must never break a round
     }
     return [...mentioned, ...picked];
+  }
+
+  private isCapped(conv: Conversation): boolean {
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    return this.deps.store.countInvocationsSince(conv.id, dayStart.getTime()) >= conv.settings.dailyInvocationCap;
   }
 
   private underDailyCap(conv: Conversation, st: ConvState): boolean {

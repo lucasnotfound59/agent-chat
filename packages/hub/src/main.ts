@@ -71,6 +71,11 @@ const scheduler = new Scheduler({
   emit: (e) => bus.emit(e),
   dataDir,
   isAvailable: (name) => availability.get(name)?.ok ?? false,
+  log: (e) =>
+    console.log(
+      `[triage] agent=${e.adapter ?? '?'} ${e.durationMs}ms ` +
+        (e.outcome.kind === 'picked' ? `picked=${e.outcome.names.join(',')}` : e.outcome.kind === 'none' ? 'none' : `error=${e.outcome.message}`),
+    ),
 });
 
 const ask = new AskService({

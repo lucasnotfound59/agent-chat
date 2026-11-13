@@ -183,3 +183,114 @@ describe('createHubClient edge cases', () => {
     expect(err).not.toBeInstanceOf(HubUnreachableError);
   });
 });
+
+describe('createHubClient timeouts and transport', () => {
+  const timeoutSentence = 'The hub did not answer within 10 minutes.';
+
+  it('maps an undici headers or body timeout to the timeout sentence, never to hub-not-running', async () => {
+    for (const code of ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']) {
+      const e = new TypeError('fetch failed');
+      (e as { cause?: unknown }).cause = Object.assign(new Error('timeout'), { code });
+      const f = fakeFetch(e);
+      const c = createHubClient({ baseUrl: base, as: 'codex', getToken: () => 'tok', fetchImpl: f.fetchImpl });
+      const err = await c.ask('claude', 'q').catch((x) => x);
+      expect(err).not.toBeInstanceOf(HubUnreachableError);
+      expect(err.message).toBe(timeoutSentence);
+    }
+  });
+
+  async function withServer(handler: (q: import('node:http').IncomingMessage, r: import('node:http').ServerResponse) => void) {
+    const http = await import('node:http');
+    const srv = http.createServer(handler);
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const port = (srv.address() as { port: number }).port;
+    return {
+      url: `http://127.0.0.1:${port}`,
+      close: () => new Promise((r) => (srv.closeAllConnections(), srv.close(r))),
+    };
+  }
+
+  it('the default transport reports the timeout sentence when the hub delays its response headers past the timeout', async () => {
+    const s = await withServer(() => {
+      /* never answers */
+    });
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok', timeoutMs: 100 });
+    const err = await c.ask('claude', 'q').catch((x) => x);
+    await s.close();
+    expect(err).not.toBeInstanceOf(HubUnreachableError);
+    expect(err.message).toBe(timeoutSentence);
+  });
+
+  it('the default transport returns a slow but successful response intact, with the bearer token and body', async () => {
+    let seen: { auth?: string; body?: string; ctype?: string } = {};
+    const s = await withServer((q, res) => {
+      let body = '';
+      q.on('data', (d) => (body += d));
+      q.on('end', () => {
+        seen = { auth: q.headers.authorization, body, ctype: q.headers['content-type'] };
+        setTimeout(() => {
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ reply: 'slow answer ✓' }));
+        }, 400);
+      });
+    });
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok', timeoutMs: 5000 });
+    expect(await c.ask('claude', 'why?')).toBe('slow answer ✓');
+    await s.close();
+    expect(seen.auth).toBe('Bearer tok');
+    expect(seen.ctype).toBe('application/json');
+    expect(JSON.parse(seen.body!)).toEqual({ as: 'codex', to: 'claude', question: 'why?' });
+  });
+
+  it('the default transport turns a non-2xx hub answer into an Error with the hub error text', async () => {
+    const s = await withServer((_q, res) => {
+      res.statusCode = 504;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: 'claude timed out' }));
+    });
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok' });
+    const err = await c.ask('claude', 'q').catch((x) => x);
+    await s.close();
+    expect(err).not.toBeInstanceOf(HubUnreachableError);
+    expect(err.message).toBe('claude timed out');
+  });
+
+  it('the default transport aborts the request when the caller cancels', async () => {
+    let closed = false;
+    const s = await withServer((q) => q.socket.on('close', () => (closed = true)));
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok' });
+    const ctl = new AbortController();
+    const p = c.ask('claude', 'q', ctl.signal).catch((x) => x);
+    await new Promise((r) => setTimeout(r, 100));
+    ctl.abort();
+    const err = await p;
+    await new Promise((r) => setTimeout(r, 50));
+    await s.close();
+    expect(err).not.toBeInstanceOf(HubUnreachableError);
+    expect(closed).toBe(true);
+  });
+
+  it('the default transport reports a refused connection as hub-not-running', async () => {
+    const s = await withServer(() => {});
+    await s.close();
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok' });
+    await expect(c.ask('claude', 'q')).rejects.toBeInstanceOf(HubUnreachableError);
+  });
+
+  it('listMembers times out after its own limit with a one-sentence error, and honours cancellation', async () => {
+    const s = await withServer(() => {});
+    const c = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok', listTimeoutMs: 100 });
+    const err = await c.listMembers().catch((x) => x);
+    expect(err).not.toBeInstanceOf(HubUnreachableError);
+    expect(err.message).toBe('The hub did not answer within 30 seconds.');
+
+    const c2 = createHubClient({ baseUrl: s.url, as: 'codex', getToken: () => 'tok' });
+    const ctl = new AbortController();
+    const p = c2.listMembers(ctl.signal).catch((x) => x);
+    ctl.abort();
+    const err2 = await p;
+    await s.close();
+    expect(err2).toBeDefined();
+    expect(err2).not.toBeInstanceOf(HubUnreachableError);
+  });
+});

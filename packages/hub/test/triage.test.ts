@@ -88,6 +88,12 @@ describe('AgentTriage', () => {
     expect(req.prompt).toContain('我: 谁懂 Rust？');
     expect(req.prompt).toContain('{"speakers"');
   });
+  it('passes the caller signal into complete()', async () => {
+    const { fake, triage } = make('{"speakers":[]}');
+    const ctl = new AbortController();
+    await triage.pick(input, ctl.signal);
+    expect(fake.completeCalls[0].signal).toBe(ctl.signal);
+  });
   it('uses a custom timeout', async () => {
     const fake = new FakeAdapter('fake-t', 'T');
     await new AgentTriage(fake, '/w', 1234).pick(input);
