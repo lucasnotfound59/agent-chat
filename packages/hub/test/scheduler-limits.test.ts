@@ -139,6 +139,61 @@ describe('triage versus cap, stop and logging', () => {
   });
 });
 
+describe('triage is recorded as an invocation and counted against the daily cap', () => {
+  const triageRows = (t: ReturnType<typeof setup>) => t.store.listInvocations(t.group.id).filter((i) => i.reason === 'triage');
+
+  it('records one triage row per call on the triage agent, with the outcome mapped', async () => {
+    const t = setup({ triage: true, settings: { maxAgentRounds: 0 } });
+    t.triage.label = 'fake-b';
+    t.triage.pickNames = ['A'];
+    t.say(t.group.id, '没有点名');
+    await t.settle();
+    t.triage.pickNames = [];
+    t.say(t.group.id, '第二');
+    await t.settle();
+    t.triage.fail = true;
+    t.say(t.group.id, '第三');
+    await t.settle();
+    const rows = triageRows(t);
+    expect(rows.map((r) => [r.memberId, r.outcome])).toEqual([
+      [t.b.id, 'replied'],
+      [t.b.id, 'silent'],
+      [t.b.id, 'error'],
+    ]);
+    expect(rows.every((r) => r.endedAt !== null)).toBe(true);
+  });
+
+  it('a triage call uses up the cap: with a cap of 1 nobody is invoked after it, and the cap notice is posted', async () => {
+    const t = setup({ triage: true, settings: { dailyInvocationCap: 1, maxAgentRounds: 0 } });
+    t.triage.label = 'fake-b';
+    t.triage.pickNames = ['A'];
+    t.say(t.group.id, '没有点名');
+    await t.settle();
+    expect(t.triage.calls).toHaveLength(1);
+    expect(t.fa.calls.length + t.fb.calls.length).toBe(0);
+    expect(t.store.listMessages(t.group.id).filter((m) => m.kind === 'system').map((m) => m.body).join()).toContain('上限');
+  });
+
+  it('a triage row is never retried', async () => {
+    const t = setup({ triage: true, settings: { maxAgentRounds: 0 } });
+    t.triage.label = 'fake-b';
+    t.say(t.group.id, '没有点名');
+    await t.settle();
+    const [row] = triageRows(t);
+    expect(t.scheduler.retryRefusal(row.id)).toBe('triage');
+    expect(await t.scheduler.retryInvocation(row.id)).toBe(false);
+  });
+
+  it('a triage that names no known agent is not recorded (nothing to attach the row to)', async () => {
+    const t = setup({ triage: true, settings: { maxAgentRounds: 0 } });
+    t.triage.pickNames = ['A'];
+    t.say(t.group.id, '没有点名');
+    await t.settle();
+    expect(triageRows(t)).toEqual([]);
+    expect(t.fa.calls).toHaveLength(1);
+  });
+});
+
 describe('pause', () => {
   it('invokes nobody while paused and catches up after kick', async () => {
     const t = setup();

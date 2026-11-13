@@ -51,7 +51,7 @@ type Execution =
   | { kind: 'silent' }
   | { kind: 'timeout' | 'error' | 'aborted'; message: string };
 
-export type RetryRefusal = 'not_found' | 'stopped' | 'ask' | 'paused' | 'running';
+export type RetryRefusal = 'not_found' | 'stopped' | 'ask' | 'triage' | 'paused' | 'running';
 
 export class Scheduler {
   private readonly states = new Map<string, ConvState>();
@@ -112,6 +112,7 @@ export class Scheduler {
     const agent = this.deps.store.getMember(inv.memberId);
     if (!conv || !agent) return 'not_found';
     if (conv.kind === 'ask') return 'ask';
+    if (inv.reason === 'triage') return 'triage';
     if (conv.settings.paused) return 'paused';
     if (this.states.get(conv.id)?.running) return 'running';
     return null;
@@ -238,6 +239,12 @@ export class Scheduler {
     let picked: Member[] = [];
     const started = Date.now();
     let outcome: TriageLogEntry['outcome'];
+    // A triage call is a real agent run, so it gets an invocation row (counted by the daily cap like any
+    // other) on the agent behind it. A triage that names no known agent has nothing to attach the row to.
+    const triageAgent = triage.label
+      ? this.deps.store.listMembers().find((m) => m.kind === 'agent' && m.adapter === triage.label)
+      : undefined;
+    const triageInvocation = triageAgent ? this.deps.store.startInvocation(conv.id, triageAgent.id, 'triage') : null;
     try {
       const ids = await triage.pick(
         {
@@ -254,6 +261,12 @@ export class Scheduler {
     } catch (err) {
       picked = [];
       outcome = { kind: 'error', message: err instanceof Error ? err.message.slice(0, 200) : 'unknown error' };
+    }
+    if (triageInvocation) {
+      this.deps.store.finishInvocation(
+        triageInvocation,
+        signal.aborted ? 'interrupted' : outcome.kind === 'picked' ? 'replied' : outcome.kind === 'none' ? 'silent' : 'error',
+      );
     }
     try {
       this.deps.log?.({ adapter: triage.label ?? null, durationMs: Date.now() - started, outcome });

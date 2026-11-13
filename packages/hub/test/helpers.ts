@@ -9,6 +9,8 @@ import type { Triage, TriageInput } from '../src/triage';
 import type { HubEvent, Settings } from '../src/types';
 
 export class FakeTriage implements Triage {
+  /** Adapter name of the agent behind this triage; unset like a triage that names no agent. */
+  label?: string;
   calls: TriageInput[] = [];
   signals: AbortSignal[] = [];
   /** Names to pick; 'ALL' picks every candidate in order. */
