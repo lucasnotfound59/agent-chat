@@ -260,7 +260,13 @@ export class Scheduler {
       outcome = picked.length > 0 ? { kind: 'picked', names: picked.map((a) => a.name) } : { kind: 'none' };
     } catch (err) {
       picked = [];
-      outcome = { kind: 'error', message: err instanceof Error ? err.message.slice(0, 200) : 'unknown error' };
+      // An AdapterError's message ends with the harness's stderr tail, which may echo the chat, and the log
+      // promises no message text: keep only its code. Triage's own errors are fixed sentences.
+      outcome = {
+        kind: 'error',
+        message:
+          err instanceof AdapterError ? `adapter error: ${err.code}` : err instanceof Error ? err.message.slice(0, 200) : 'unknown error',
+      };
     }
     if (triageInvocation) {
       this.deps.store.finishInvocation(

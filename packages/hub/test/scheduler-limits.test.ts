@@ -5,7 +5,7 @@ import { AdapterError, FakeAdapter } from '@agent-chat/adapters';
 import type { InvokeRequest, InvokeResult } from '@agent-chat/adapters';
 import { setup } from './helpers';
 import type { TriageLogEntry } from '../src/scheduler';
-import { AgentTriage } from '../src/triage';
+import { AgentTriage, type Triage } from '../src/triage';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -136,6 +136,24 @@ describe('triage versus cap, stop and logging', () => {
     t.say(t.group.id, '第三');
     await t.settle();
     expect(entries[2].outcome).toEqual({ kind: 'none' });
+  });
+});
+
+describe('triage error log', () => {
+  it('logs only the adapter error code, never its message (which carries a stderr tail that may echo the chat)', async () => {
+    const entries: TriageLogEntry[] = [];
+    const leaky: Triage = {
+      label: 'fake-b',
+      pick: async () => {
+        throw new AdapterError('crashed', 'no text in output; exit 1; stderr: 秘密内容 from the transcript');
+      },
+    };
+    const t = setup({ triage: leaky, settings: { maxAgentRounds: 0 }, log: (e) => entries.push(e) });
+    t.say(t.group.id, '秘密内容');
+    await t.settle();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].outcome).toEqual({ kind: 'error', message: 'adapter error: crashed' });
+    expect(JSON.stringify(entries)).not.toContain('秘密内容');
   });
 });
 
