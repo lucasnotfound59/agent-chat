@@ -161,6 +161,7 @@ describe('buildMcpServer', () => {
 
 describe('main.ts process', () => {
   const main = join(dirname(fileURLToPath(import.meta.url)), '../src/main.ts');
+  const testMain = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/main-with-test-token.ts');
   const tsxLoader = pathToFileURL(join(dirname(createRequire(import.meta.url).resolve('tsx/package.json')), 'dist/loader.mjs')).href;
   let hub: Server | undefined;
   afterEach(() => new Promise<void>((r) => (hub ? hub.close(() => r()) : r())));
@@ -194,8 +195,8 @@ describe('main.ts process', () => {
   it('registers no tools when AGENTCHAT_INVOCATION=1', async () => {
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: ['--import', tsxLoader, main, '--as', 'codex'],
-      env: { PATH: process.env.PATH ?? '', AGENTCHAT_INVOCATION: '1', AGENTCHAT_TOKEN_FOR_TESTS: 'x' },
+      args: ['--import', tsxLoader, testMain, '--as', 'codex'],
+      env: { PATH: process.env.PATH ?? '', AGENTCHAT_INVOCATION: '1', AGENTCHAT_TEST_TOKEN: 'x' },
       stderr: 'pipe',
     });
     const c = new Client({ name: 't', version: '0' });
@@ -224,8 +225,8 @@ describe('main.ts process', () => {
     const port = (hub.address() as { port: number }).port;
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: ['--import', tsxLoader, main, '--as', 'codex'],
-      env: { PATH: process.env.PATH ?? '', AGENTCHAT_PORT: String(port), AGENTCHAT_TOKEN_FOR_TESTS: 'test-token' },
+      args: ['--import', tsxLoader, testMain, '--as', 'codex'],
+      env: { PATH: process.env.PATH ?? '', AGENTCHAT_PORT: String(port), AGENTCHAT_TEST_TOKEN: 'test-token' },
       stderr: 'pipe',
     });
     const c = new Client({ name: 't', version: '0' });
