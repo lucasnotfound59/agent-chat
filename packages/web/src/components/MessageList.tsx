@@ -17,6 +17,7 @@ export function MessageList({ messages, members, meId, typingIds, hasMore, onLoa
   const stick = useRef(true);
   const restore = useRef<{ height: number; top: number } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
   const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
 
   useLayoutEffect(() => {
@@ -31,26 +32,42 @@ export function MessageList({ messages, members, meId, typingIds, hasMore, onLoa
     }
   }, [messages, typingIds.length]);
 
-  const onScroll = async () => {
+  const load = async () => {
     const el = ref.current;
     if (!el) return;
-    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    if (el.scrollTop < 40 && hasMore && !loading) {
-      setLoading(true);
-      restore.current = { height: el.scrollHeight, top: el.scrollTop };
-      try {
-        await onLoadOlder();
-      } catch {
-        restore.current = null;
-      } finally {
-        setLoading(false);
-      }
+    setLoading(true);
+    setFailed(false);
+    restore.current = { height: el.scrollHeight, top: el.scrollTop };
+    try {
+      await onLoadOlder();
+    } catch {
+      restore.current = null;
+      setFailed(true);
+    } finally {
+      setLoading(false);
     }
   };
 
+  const onScroll = () => {
+    const el = ref.current;
+    if (!el) return;
+    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (el.scrollTop < 40 && hasMore && !loading && !failed) void load();
+  };
+
   return (
-    <div className="messages" ref={ref} onScroll={() => void onScroll()}>
-      {hasMore && <div className="load-more">{loading ? '加载中…' : '向上滚动加载更早的消息'}</div>}
+    <div className="messages" ref={ref} onScroll={onScroll}>
+      {hasMore && (
+        <div className="load-more">
+          {loading ? (
+            '加载中…'
+          ) : failed ? (
+            <button onClick={() => void load()}>加载失败，点击重试</button>
+          ) : (
+            '向上滚动加载更早的消息'
+          )}
+        </div>
+      )}
       {messages.map((m) => (
         <MessageItem key={m.id} message={m} sender={m.senderId ? byId.get(m.senderId) : undefined} mine={m.senderId !== null && m.senderId === meId} />
       ))}
