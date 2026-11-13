@@ -782,6 +782,31 @@ describe('writes go through symlinks', () => {
     expect(JSON.parse(readFileSync(real, 'utf8')).mcp['agent-chat'].enabled).toBe(true);
   });
 
+  it('a dangling OpenCode config symlink stays a symlink and the file is created at its target', async () => {
+    const home = mk();
+    const realDir = mk();
+    const real = join(realDir, 'dotfiles-opencode.json'); // does not exist yet
+    mkdirSync(join(home, '.config/opencode'), { recursive: true });
+    const link = join(home, '.config/opencode/opencode.json');
+    symlinkSync(real, link);
+    for (const s of planConnect({ targets: ['opencode'], repoRoot, home, nodePath, dshProfiles: [], exec: async () => {} })) await s.run();
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(real, 'utf8')).mcp['agent-chat'].enabled).toBe(true);
+  });
+
+  it('a relative, chained symlink is followed to the final file', async () => {
+    const home = mk();
+    const dir = join(home, '.config/opencode');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'final.json'), '{}\n');
+    symlinkSync('final.json', join(dir, 'middle.json'));
+    symlinkSync('middle.json', join(dir, 'opencode.json'));
+    for (const s of planConnect({ targets: ['opencode'], repoRoot, home, nodePath, dshProfiles: [], exec: async () => {} })) await s.run();
+    expect(lstatSync(join(dir, 'opencode.json')).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(dir, 'middle.json')).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(join(dir, 'final.json'), 'utf8')).mcp['agent-chat']).toBeTruthy();
+  });
+
   it('the same for a DSH patch file', async () => {
     const home = mk();
     const dir = join(home, '.dsh/profiles/web');

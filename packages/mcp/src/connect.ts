@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -142,11 +142,30 @@ function backupOnce(file: string): void {
 }
 
 /**
+ * The file a write to `file` should land in: every symlink on the way is followed, also a dangling one
+ * (whose target does not exist yet), so the link itself is never replaced by a regular file.
+ */
+function writeTarget(file: string): string {
+  let p = file;
+  for (let hops = 0; hops < 40; hops++) {
+    let isLink: boolean;
+    try {
+      isLink = lstatSync(p).isSymbolicLink();
+    } catch {
+      return p; // does not exist: write it here
+    }
+    if (!isLink) return realpathSync(p);
+    p = resolve(dirname(p), readlinkSync(p));
+  }
+  throw new Error(`${file}: too many levels of symbolic links`);
+}
+
+/**
  * Writes through a temp file in the same directory and renames it over `file`, keeping the file's mode.
  * A symlink is followed: the temp file goes next to, and replaces, the link's target, so the link survives.
  */
 function atomicWrite(file: string, content: string): void {
-  const target = existsSync(file) ? realpathSync(file) : file;
+  const target = writeTarget(file);
   const tmp = join(dirname(target), `.${basename(target)}.agent-chat.${process.pid}.tmp`);
   const mode = existsSync(target) ? statSync(target).mode & 0o7777 : 0o644;
   try {
