@@ -61,7 +61,7 @@ function Chat({ token }: { token: string }) {
         {conv ? (
           <>
             <MessageList
-              key={conv.id}
+              key={`messages-${conv.id}`}
               messages={state.messages[conv.id] ?? []}
               members={state.members}
               meId={state.me?.id ?? null}
@@ -70,7 +70,7 @@ function Chat({ token }: { token: string }) {
               onLoadOlder={chat.loadOlder}
             />
             <Composer
-              key={conv.id}
+              key={`composer-${conv.id}`}
               candidates={candidates}
               onSend={chat.send}
               placeholder={conv.kind === 'ask' ? '在这里插话，被问的 agent 会回答' : '发消息，@ 提到成员'}
